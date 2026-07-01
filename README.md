@@ -112,6 +112,24 @@ For testing without sending IR:
 poetry run hap-daikin-ac homekit --dry-run
 ```
 
+## Run With Docker
+
+The published image is `sbhhbs/hap-dakin-ac`. Use host networking so HomeKit mDNS and Broadlink discovery can work, and mount `/data` to keep HomeKit pairing state across restarts.
+
+```bash
+docker run --rm --network host \
+  -v hap-daikin-ac:/data \
+  -e HAP_DAIKIN_RM4_MAC_ADDRESS=a0:43:b0:72:bb:64 \
+  sbhhbs/hap-dakin-ac:latest
+```
+
+One-shot CLI commands can use the same image:
+
+```bash
+docker run --rm --network host sbhhbs/hap-dakin-ac:latest discover
+docker run --rm --network host sbhhbs/hap-dakin-ac:latest sensors --mac a0:43:b0:72:bb:64
+```
+
 ## Notes
 
 The default base state is the decoded `cool24` Daikin 280-bit state from the attached notes:
