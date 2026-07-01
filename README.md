@@ -28,6 +28,13 @@ poetry run hap-daikin-ac code --format pronto
 poetry run hap-daikin-ac code --format all --spaced
 ```
 
+Use `--log-level DEBUG` before or after a subcommand for more detailed colored logs:
+
+```bash
+poetry run hap-daikin-ac --log-level DEBUG discover
+poetry run hap-daikin-ac homekit --log-level DEBUG
+```
+
 ## Send Through An RM4
 
 Discover devices:
@@ -66,7 +73,7 @@ poetry run hap-daikin-ac sensors --host 192.168.1.50 --json
 
 ## Run As A HomeKit Accessory
 
-The HomeKit accessory is a cooling-only `HeaterCooler` service with fan speed control. Heat mode is intentionally not advertised because this AC does not support it. Current temperature is read from the RM4 sensor and humidity is exposed as a separate HomeKit humidity sensor.
+The HomeKit server publishes a bridge with a cooling-only AC accessory and a separate Fan accessory. Heat mode is intentionally not advertised because this AC does not support it. Current temperature is read from the RM4 sensor and humidity is exposed as a separate HomeKit humidity sensor.
 
 ```bash
 export HAP_DAIKIN_RM4_MAC_ADDRESS=a0:43:b0:72:bb:64
@@ -74,6 +81,12 @@ poetry run hap-daikin-ac homekit
 ```
 
 The server prints a HomeKit QR code and pairing code on startup. Scan the QR code in the Home app, or enter the code manually.
+
+If you previously paired an older standalone version, remove that accessory from the Home app and use a fresh persist file once so HomeKit sees the new bridge shape:
+
+```bash
+poetry run hap-daikin-ac homekit --persist-file .hap-daikin-ac-bridge.state
+```
 
 HomeKit server settings can be controlled with environment variables:
 

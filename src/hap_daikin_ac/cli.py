@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 from typing import Any
 
@@ -21,6 +20,7 @@ HOMEKIT_PORT_ENV = "HAP_DAIKIN_HOMEKIT_PORT"
 HOMEKIT_PINCODE_ENV = "HAP_DAIKIN_HOMEKIT_PINCODE"
 HOMEKIT_PERSIST_FILE_ENV = "HAP_DAIKIN_HOMEKIT_PERSIST_FILE"
 HOMEKIT_NAME_ENV = "HAP_DAIKIN_HOMEKIT_NAME"
+LOG_LEVEL_ENV = "HAP_DAIKIN_LOG_LEVEL"
 RM4_HOST_ENV = "HAP_DAIKIN_RM4_HOST"
 RM4_MAC_ENV = "HAP_DAIKIN_RM4_MAC"
 RM4_MAC_ADDRESS_ENV = "HAP_DAIKIN_RM4_MAC_ADDRESS"
@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Generate Daikin IR codes and send them with a Broadlink RM4.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    add_logging_options(parser, with_defaults=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     code_parser = subparsers.add_parser(
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="generate Daikin state, Pronto, or Broadlink code",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    add_logging_options(code_parser)
     add_daikin_options(code_parser)
     code_parser.add_argument(
         "--format",
@@ -62,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="generate and send a Daikin IR packet through an RM4",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    add_logging_options(send_parser)
     add_daikin_options(send_parser)
     add_broadlink_target_options(send_parser)
     send_parser.add_argument(
@@ -85,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="discover Broadlink devices on the local network",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    add_logging_options(discover_parser)
     add_discovery_options(discover_parser)
     discover_parser.set_defaults(func=run_discover)
 
@@ -93,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="read temperature and humidity from the Broadlink RM4 sensors",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    add_logging_options(sensors_parser)
     add_broadlink_target_options(sensors_parser, include_send_options=False)
     sensors_parser.add_argument(
         "--json",
@@ -106,11 +111,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="run a HomeKit AC accessory backed by the Broadlink RM4",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    add_logging_options(homekit_parser)
     add_homekit_options(homekit_parser)
     add_broadlink_target_options(homekit_parser)
     homekit_parser.set_defaults(func=run_homekit)
 
     return parser
+
+
+def add_logging_options(
+    parser: argparse.ArgumentParser,
+    *,
+    with_defaults: bool = False,
+) -> None:
+    default_level = os.getenv(LOG_LEVEL_ENV, "INFO") if with_defaults else argparse.SUPPRESS
+    default_no_color = (
+        os.getenv("NO_COLOR") is not None or os.getenv("HAP_DAIKIN_NO_COLOR") in {"1", "true", "yes"}
+        if with_defaults
+        else argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--log-level",
+        default=default_level,
+        help=f"log level; env {LOG_LEVEL_ENV}",
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        default=default_no_color,
+        help="disable colored logs; env NO_COLOR or HAP_DAIKIN_NO_COLOR=1",
+    )
 
 
 def add_daikin_options(parser: argparse.ArgumentParser) -> None:
@@ -390,11 +420,15 @@ def run_homekit(args: argparse.Namespace) -> int:
 
     install_child_watcher_compat()
 
+    from pyhap.accessory import Bridge
     from pyhap.accessory_driver import AccessoryDriver
 
-    from .homekit import BroadlinkDaikinController, BroadlinkTarget, DaikinAcAccessory
-
-    logging.basicConfig(level=logging.INFO)
+    from .homekit import (
+        BroadlinkDaikinController,
+        BroadlinkTarget,
+        DaikinAcAccessory,
+        DaikinFanAccessory,
+    )
 
     target = BroadlinkTarget(
         host=args.host,
@@ -415,7 +449,8 @@ def run_homekit(args: argparse.Namespace) -> int:
         persist_file=args.persist_file,
         pincode=args.pincode.encode("ascii"),
     )
-    accessory = DaikinAcAccessory(
+    bridge = Bridge(driver, f"{args.name} Bridge")
+    ac_accessory = DaikinAcAccessory(
         driver,
         args.name,
         controller=controller,
@@ -423,7 +458,15 @@ def run_homekit(args: argparse.Namespace) -> int:
         initial_fan=args.initial_fan,
         sensor_poll_interval=args.sensor_interval,
     )
-    driver.add_accessory(accessory=accessory)
+    fan_accessory = DaikinFanAccessory(
+        driver,
+        f"{args.name} Fan",
+        ac_accessory=ac_accessory,
+    )
+    ac_accessory.register_fan_accessory(fan_accessory)
+    bridge.add_accessory(ac_accessory)
+    bridge.add_accessory(fan_accessory)
+    driver.add_accessory(accessory=bridge)
     driver.start()
     return 0
 
@@ -431,6 +474,9 @@ def run_homekit(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    from .logging_config import configure_logging
+
+    configure_logging(args.log_level, color=not args.no_color)
     try:
         return args.func(args)
     except (RuntimeError, ValueError) as exc:

@@ -146,11 +146,22 @@ version = "0.4.6"
 description = "Cross-platform colored terminal text."
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
-groups = ["dev"]
-markers = "sys_platform == \"win32\""
+groups = ["main", "dev"]
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
+]
+
+[[package]]
+name = "colorlogs"
+version = "0.1"
+description = "Custom logger allows colored logs"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "colorlogs-0.1-py3-none-any.whl", hash = "sha256:33c93fd7dc07c3018a87f99eca8679febaf64a7d4691cc8d4413fa5ddec69270"},
+    {file = "colorlogs-0.1.tar.gz", hash = "sha256:e595aa14dce2aa17c53595f9d00fa07b7acc2e4085f24b4a8537a5fb72ef9bea"},
 ]
 
 [[package]]
@@ -536,4 +547,4 @@ ifaddr = ">=0.1.7"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "bd62ede9bde740dc37bf443c4a53d22689ab5591982b1822f0995df457ae1fc6"
+content-hash = "43807c73a70af14b7e5199c9f64ba07bfe711b14746d51a1f963b44ba1f28ede"

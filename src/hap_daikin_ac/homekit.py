@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pyhap.accessory import Accessory
-from pyhap.const import CATEGORY_AIR_CONDITIONER
+from pyhap.const import CATEGORY_AIR_CONDITIONER, CATEGORY_FAN
 
 from .broadlink_codec import format_hex, pulses_to_broadlink_packet
 from .protocol import DaikinCommand, MAX_TEMP_C, MIN_TEMP_C, state_to_pulses
@@ -38,9 +38,14 @@ TARGET_STATE_COOL = 2
 TEMP_DISPLAY_CELSIUS = 0
 SWING_DISABLED = 0
 SWING_ENABLED = 1
+CURRENT_FAN_STATE_INACTIVE = 0
+CURRENT_FAN_STATE_BLOWING_AIR = 2
+TARGET_FAN_STATE_MANUAL = 0
+TARGET_FAN_STATE_AUTO = 1
 
 COMMAND_TRIGGER_CHARS = {
     "Active",
+    "TargetFanState",
     "TargetHeaterCoolerState",
     "CoolingThresholdTemperature",
     "RotationSpeed",
@@ -178,6 +183,7 @@ class DaikinAcAccessory(Accessory):
         self.fan: int | str = initial_fan
         self.swing_vertical = False
         self.sensor_poll_interval = sensor_poll_interval
+        self.fan_accessory: DaikinFanAccessory | None = None
 
         self.set_info_service(
             manufacturer="Daikin",
@@ -263,6 +269,10 @@ class DaikinAcAccessory(Accessory):
         )
         humidity_service.configure_char("Name", value=f"{self.display_name} Humidity")
 
+    def register_fan_accessory(self, fan_accessory: "DaikinFanAccessory") -> None:
+        self.fan_accessory = fan_accessory
+        fan_accessory.update_from_ac(should_notify=False)
+
     async def run(self) -> None:
         if self.sensor_poll_interval <= 0:
             return
@@ -280,6 +290,7 @@ class DaikinAcAccessory(Accessory):
     def set_active(self, value: int) -> None:
         self.active = value == ACTIVE_ACTIVE
         self._publish_state()
+        self._sync_fan_accessory()
 
     def set_target_state(self, value: int) -> None:
         if value == TARGET_STATE_HEAT:
@@ -289,6 +300,7 @@ class DaikinAcAccessory(Accessory):
         # Some HomeKit clients, especially Siri, may request Auto even when it is
         # not advertised. This cooling-only accessory treats Auto as Cool.
         self.char_target_state.set_value(TARGET_STATE_COOL, should_notify=True)
+        self._sync_fan_accessory()
 
     def set_cooling_temperature(self, value: float) -> None:
         self.target_temp = int(round(value))
@@ -300,6 +312,7 @@ class DaikinAcAccessory(Accessory):
             fan_to_rotation_speed(self.fan),
             should_notify=True,
         )
+        self._sync_fan_accessory()
 
     def set_swing(self, value: int) -> None:
         self.swing_vertical = value == SWING_ENABLED
@@ -307,6 +320,7 @@ class DaikinAcAccessory(Accessory):
             SWING_ENABLED if self.swing_vertical else SWING_DISABLED,
             should_notify=True,
         )
+        self._sync_fan_accessory()
 
     def get_current_temperature(self) -> float:
         return self.current_temp
@@ -350,6 +364,7 @@ class DaikinAcAccessory(Accessory):
             should_notify=True,
         )
         self.char_target_state.set_value(TARGET_STATE_COOL, should_notify=True)
+        self._sync_fan_accessory()
 
     def _schedule_current_command(self) -> None:
         command = DaikinCommand(
@@ -366,3 +381,118 @@ class DaikinAcAccessory(Accessory):
             self.controller.send(command)
         except RuntimeError as exc:
             LOGGER.warning("unable to send Daikin command: %s", exc)
+
+    def _sync_fan_accessory(self) -> None:
+        if self.fan_accessory is not None:
+            self.fan_accessory.update_from_ac()
+
+
+class DaikinFanAccessory(Accessory):
+    """Separate HomeKit fan control surface for the Daikin AC."""
+
+    category = CATEGORY_FAN
+
+    def __init__(
+        self,
+        *args,
+        ac_accessory: DaikinAcAccessory,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.ac_accessory = ac_accessory
+
+        self.set_info_service(
+            manufacturer="Daikin",
+            model="IR AC fan controls via Broadlink RM4",
+            serial_number="hap-daikin-ac-fan",
+            firmware_revision="0.1.0",
+        )
+
+        service = self.add_preload_service(
+            "Fanv2",
+            chars=[
+                "Name",
+                "CurrentFanState",
+                "TargetFanState",
+                "RotationSpeed",
+                "SwingMode",
+            ],
+        )
+        service.setter_callback = self.handle_fan_write
+
+        self.char_active = service.configure_char(
+            "Active",
+            value=ACTIVE_INACTIVE,
+            setter_callback=self.set_active,
+        )
+        self.char_current_state = service.configure_char(
+            "CurrentFanState",
+            value=CURRENT_FAN_STATE_INACTIVE,
+        )
+        self.char_target_state = service.configure_char(
+            "TargetFanState",
+            value=TARGET_FAN_STATE_AUTO,
+            setter_callback=self.set_target_fan_state,
+        )
+        self.char_rotation_speed = service.configure_char(
+            "RotationSpeed",
+            properties={"minValue": 0, "maxValue": 100, "minStep": 20},
+            value=fan_to_rotation_speed(self.ac_accessory.fan),
+            setter_callback=self.set_rotation_speed,
+        )
+        self.char_swing = service.configure_char(
+            "SwingMode",
+            value=SWING_DISABLED,
+            setter_callback=self.set_swing,
+        )
+        service.configure_char("Name", value=self.display_name)
+
+    def set_active(self, value: int) -> None:
+        self.ac_accessory.set_active(value)
+        self.update_from_ac()
+
+    def set_target_fan_state(self, value: int) -> None:
+        if value == TARGET_FAN_STATE_AUTO:
+            self.ac_accessory.set_rotation_speed(0)
+        elif self.ac_accessory.fan == "auto":
+            self.ac_accessory.set_rotation_speed(60)
+        self.update_from_ac()
+
+    def set_rotation_speed(self, value: float) -> None:
+        self.ac_accessory.set_rotation_speed(value)
+        self.update_from_ac()
+
+    def set_swing(self, value: int) -> None:
+        self.ac_accessory.set_swing(value)
+        self.update_from_ac()
+
+    def handle_fan_write(self, chars: dict[str, object]) -> None:
+        if not COMMAND_TRIGGER_CHARS.intersection(chars):
+            return
+        if not self.ac_accessory.active and "Active" not in chars:
+            return
+        self.ac_accessory._schedule_current_command()
+
+    def update_from_ac(self, *, should_notify: bool = True) -> None:
+        active = ACTIVE_ACTIVE if self.ac_accessory.active else ACTIVE_INACTIVE
+        current_state = (
+            CURRENT_FAN_STATE_BLOWING_AIR
+            if self.ac_accessory.active
+            else CURRENT_FAN_STATE_INACTIVE
+        )
+        target_state = (
+            TARGET_FAN_STATE_AUTO
+            if self.ac_accessory.fan == "auto"
+            else TARGET_FAN_STATE_MANUAL
+        )
+        self.char_active.set_value(active, should_notify=should_notify)
+        self.char_current_state.set_value(current_state, should_notify=should_notify)
+        self.char_target_state.set_value(target_state, should_notify=should_notify)
+        self.char_rotation_speed.set_value(
+            fan_to_rotation_speed(self.ac_accessory.fan),
+            should_notify=should_notify,
+        )
+        self.char_swing.set_value(
+            SWING_ENABLED if self.ac_accessory.swing_vertical else SWING_DISABLED,
+            should_notify=should_notify,
+        )

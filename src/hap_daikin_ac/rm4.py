@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import time
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,7 @@ def select_device(
     from broadlink.exceptions import BroadlinkException
 
     if host:
+        LOGGER.info("connecting to RM4 at %s", host)
         try:
             device = broadlink.hello(host, timeout=timeout)
         except BroadlinkException as exc:
@@ -92,6 +96,7 @@ def select_device(
             raise RuntimeError(f"device at {host} is not a Broadlink RM remote")
         return device
 
+    LOGGER.info("discovering Broadlink RM devices")
     devices = [
         device
         for device in discover_devices(
@@ -104,6 +109,7 @@ def select_device(
 
     if mac:
         target_mac = normalize_mac(mac)
+        LOGGER.info("selecting discovered RM4 by MAC %s", target_mac)
         devices = [device for device in devices if mac_matches(device, target_mac)]
 
     if not devices:
@@ -115,13 +121,16 @@ def select_device(
     if len(devices) > 1:
         summaries = "\n".join(f"  - {device_summary(device)}" for device in devices)
         raise RuntimeError(f"multiple Broadlink RM devices found:\n{summaries}")
-    return devices[0]
+    device = devices[0]
+    LOGGER.info("selected %s", device_summary(device))
+    return device
 
 
 def authenticate_device(device: Any) -> None:
     from broadlink.exceptions import BroadlinkException
 
     try:
+        LOGGER.info("authenticating %s", device_summary(device))
         device.auth()
     except BroadlinkException as exc:
         raise RuntimeError(f"Broadlink authentication failed: {exc}") from exc
@@ -141,6 +150,12 @@ def send_ir_packet_to_device(
 
     try:
         for index in range(repeats):
+            LOGGER.info(
+                "sending IR packet via %s (%s/%s)",
+                device_summary(device),
+                index + 1,
+                repeats,
+            )
             device.send_data(packet)
             if index < repeats - 1:
                 time.sleep(repeat_delay)
@@ -155,6 +170,7 @@ def read_device_sensors(device: Any) -> Rm4SensorReadings:
         raise RuntimeError(f"{device_summary(device)} does not expose RM4 sensors")
 
     try:
+        LOGGER.debug("reading RM4 sensors from %s", device_summary(device))
         raw = device.check_sensors()
     except BroadlinkException as exc:
         raise RuntimeError(f"Broadlink sensor read failed: {exc}") from exc

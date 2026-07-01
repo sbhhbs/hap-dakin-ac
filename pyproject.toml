@@ -9,7 +9,9 @@ readme = "README.md"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "broadlink (>=0.19.0,<0.20.0)",
-    "hap-python[qrcode] (>=5.0.0,<6.0.0)"
+    "hap-python[qrcode] (>=5.0.0,<6.0.0)",
+    "colorlogs (>=0.1,<0.2)",
+    "colorama (>=0.4.6,<0.5.0)"
 ]
 
 [project.scripts]

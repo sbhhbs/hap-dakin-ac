@@ -4,6 +4,7 @@ from hap_daikin_ac.homekit import (
     BroadlinkDaikinController,
     BroadlinkTarget,
     DaikinAcAccessory,
+    DaikinFanAccessory,
     fan_to_rotation_speed,
     rotation_speed_to_fan,
 )
@@ -126,6 +127,50 @@ def test_homekit_write_coalesces_single_async_send() -> None:
     assert command.power is True
     assert command.temp_c == 23
     assert command.fan == 5
+
+
+def test_fan_accessory_controls_shared_ac_state() -> None:
+    controller = RecordingController()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    driver.add_job = lambda target, *args: target(*args)
+    ac_accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=controller,
+        sensor_poll_interval=0,
+    )
+    fan_accessory = DaikinFanAccessory(
+        driver,
+        "Test AC Fan",
+        ac_accessory=ac_accessory,
+    )
+    ac_accessory.register_fan_accessory(fan_accessory)
+    driver.add_accessory(ac_accessory)
+
+    fan_accessory.set_active(1)
+    fan_accessory.set_target_fan_state(0)
+    fan_accessory.set_rotation_speed(80)
+    fan_accessory.set_swing(1)
+    fan_accessory.handle_fan_write(
+        {
+            "Active": 1,
+            "TargetFanState": 0,
+            "RotationSpeed": 80,
+            "SwingMode": 1,
+        }
+    )
+
+    assert ac_accessory.active is True
+    assert ac_accessory.fan == 4
+    assert ac_accessory.swing_vertical is True
+    assert fan_accessory.char_active.value == 1
+    assert fan_accessory.char_rotation_speed.value == 80
+    assert len(controller.commands) == 1
 
 
 def test_controller_discovers_once_and_reuses_bound_device(monkeypatch) -> None:
