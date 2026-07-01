@@ -408,6 +408,7 @@ def run_homekit(args: argparse.Namespace) -> int:
         sensor_cache_ttl=args.sensor_interval,
     )
     controller = BroadlinkDaikinController(target)
+    controller.connect()
     driver = AccessoryDriver(
         address=args.address,
         port=args.port,

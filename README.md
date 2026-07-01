@@ -85,7 +85,9 @@ export HAP_DAIKIN_HOMEKIT_NAME="Daikin AC"
 export HAP_DAIKIN_SENSOR_INTERVAL=60
 ```
 
-If `HAP_DAIKIN_RM4_HOST` is unset and `HAP_DAIKIN_RM4_MAC_ADDRESS` or `HAP_DAIKIN_RM4_MAC` is set, each send/sensor read discovers the RM4 by MAC address and uses the discovered IP. This is the preferred setup for DHCP networks.
+For one-shot CLI commands, if `HAP_DAIKIN_RM4_HOST` is unset and `HAP_DAIKIN_RM4_MAC_ADDRESS` or `HAP_DAIKIN_RM4_MAC` is set, the command discovers the RM4 by MAC address and uses the discovered IP. This is the preferred setup for DHCP networks.
+
+For the long-running HomeKit server, the RM4 is discovered and authenticated once at startup, then reused for sends and sensor reads until the process restarts.
 
 If `HAP_DAIKIN_HOMEKIT_ADDRESS` is unset, HAP-python auto-selects a local address. The default port is `51234`. Pairing state is stored in `.hap-daikin-ac.state` by default.
 

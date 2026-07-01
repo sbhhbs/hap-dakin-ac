@@ -5,15 +5,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from threading import Lock
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from pyhap.accessory import Accessory
 from pyhap.const import CATEGORY_AIR_CONDITIONER
 
 from .broadlink_codec import format_hex, pulses_to_broadlink_packet
 from .protocol import DaikinCommand, MAX_TEMP_C, MIN_TEMP_C, state_to_pulses
-from .rm4 import Rm4SensorReadings, device_summary, read_sensors, send_ir_packet
+from .rm4 import (
+    Rm4SensorReadings,
+    authenticate_device,
+    device_summary,
+    read_device_sensors,
+    select_device,
+    send_ir_packet_to_device,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +38,14 @@ TARGET_STATE_COOL = 2
 TEMP_DISPLAY_CELSIUS = 0
 SWING_DISABLED = 0
 SWING_ENABLED = 1
+
+COMMAND_TRIGGER_CHARS = {
+    "Active",
+    "TargetHeaterCoolerState",
+    "CoolingThresholdTemperature",
+    "RotationSpeed",
+    "SwingMode",
+}
 
 
 def rotation_speed_to_fan(value: float | int) -> int | str:
@@ -68,8 +85,29 @@ class BroadlinkDaikinController:
 
     def __init__(self, target: BroadlinkTarget) -> None:
         self.target = target
+        self._device: Any | None = None
+        self._device_lock = Lock()
         self._sensor_cache: Rm4SensorReadings | None = None
         self._sensor_cache_at = 0.0
+
+    def connect(self) -> None:
+        """Resolve and authenticate the RM4 once for the HomeKit process."""
+        if self.target.dry_run:
+            LOGGER.info("dry-run mode; RM4 discovery is skipped")
+            return
+        if self._device is not None:
+            return
+
+        device = select_device(
+            host=self.target.host,
+            mac=self.target.mac,
+            timeout=self.target.timeout,
+            local_ip_address=self.target.local_ip_address,
+            discover_ip_address=self.target.discover_ip_address,
+        )
+        authenticate_device(device)
+        self._device = device
+        LOGGER.info("bound RM4 controller to %s", device_summary(device))
 
     def send(self, command: DaikinCommand) -> None:
         state = command.to_state()
@@ -79,17 +117,22 @@ class BroadlinkDaikinController:
             LOGGER.info("dry-run Broadlink packet: %s", format_hex(packet))
             return
 
-        device = send_ir_packet(
-            packet,
-            host=self.target.host,
-            mac=self.target.mac,
-            timeout=self.target.timeout,
-            repeats=self.target.repeats,
-            repeat_delay=self.target.repeat_delay,
-            local_ip_address=self.target.local_ip_address,
-            discover_ip_address=self.target.discover_ip_address,
-        )
+        device = self._require_device()
+        with self._device_lock:
+            send_ir_packet_to_device(
+                device,
+                packet,
+                repeats=self.target.repeats,
+                repeat_delay=self.target.repeat_delay,
+            )
         LOGGER.info("sent Daikin command via %s", device_summary(device))
+
+    def _require_device(self) -> Any:
+        if self._device is None:
+            self.connect()
+        if self._device is None:
+            raise RuntimeError("RM4 controller is not connected")
+        return self._device
 
     def read_sensors(self, *, force: bool = False) -> Rm4SensorReadings | None:
         if self.target.dry_run:
@@ -104,13 +147,9 @@ class BroadlinkDaikinController:
         ):
             return self._sensor_cache
 
-        readings = read_sensors(
-            host=self.target.host,
-            mac=self.target.mac,
-            timeout=self.target.timeout,
-            local_ip_address=self.target.local_ip_address,
-            discover_ip_address=self.target.discover_ip_address,
-        )
+        device = self._require_device()
+        with self._device_lock:
+            readings = read_device_sensors(device)
         self._sensor_cache = readings
         self._sensor_cache_at = now
         return readings
@@ -157,6 +196,7 @@ class DaikinAcAccessory(Accessory):
                 "SwingMode",
             ],
         )
+        service.setter_callback = self.handle_hvac_write
         self.set_primary_service(service)
 
         self.char_active = service.configure_char(
@@ -240,7 +280,6 @@ class DaikinAcAccessory(Accessory):
     def set_active(self, value: int) -> None:
         self.active = value == ACTIVE_ACTIVE
         self._publish_state()
-        self._send_current_command()
 
     def set_target_state(self, value: int) -> None:
         if value == TARGET_STATE_HEAT:
@@ -250,14 +289,10 @@ class DaikinAcAccessory(Accessory):
         # Some HomeKit clients, especially Siri, may request Auto even when it is
         # not advertised. This cooling-only accessory treats Auto as Cool.
         self.char_target_state.set_value(TARGET_STATE_COOL, should_notify=True)
-        if self.active:
-            self._send_current_command()
 
     def set_cooling_temperature(self, value: float) -> None:
         self.target_temp = int(round(value))
         self.char_cooling_temp.set_value(self.target_temp, should_notify=True)
-        if self.active:
-            self._send_current_command()
 
     def set_rotation_speed(self, value: float) -> None:
         self.fan = rotation_speed_to_fan(value)
@@ -265,8 +300,6 @@ class DaikinAcAccessory(Accessory):
             fan_to_rotation_speed(self.fan),
             should_notify=True,
         )
-        if self.active:
-            self._send_current_command()
 
     def set_swing(self, value: int) -> None:
         self.swing_vertical = value == SWING_ENABLED
@@ -274,16 +307,19 @@ class DaikinAcAccessory(Accessory):
             SWING_ENABLED if self.swing_vertical else SWING_DISABLED,
             should_notify=True,
         )
-        if self.active:
-            self._send_current_command()
 
     def get_current_temperature(self) -> float:
-        self.refresh_sensor_readings(notify=False)
         return self.current_temp
 
     def get_current_humidity(self) -> float:
-        self.refresh_sensor_readings(notify=False)
         return self.current_humidity
+
+    def handle_hvac_write(self, chars: dict[str, object]) -> None:
+        if not COMMAND_TRIGGER_CHARS.intersection(chars):
+            return
+        if not self.active and "Active" not in chars:
+            return
+        self._schedule_current_command()
 
     def refresh_sensor_readings(self, notify: bool = True) -> None:
         try:
@@ -315,7 +351,7 @@ class DaikinAcAccessory(Accessory):
         )
         self.char_target_state.set_value(TARGET_STATE_COOL, should_notify=True)
 
-    def _send_current_command(self) -> None:
+    def _schedule_current_command(self) -> None:
         command = DaikinCommand(
             power=self.active,
             mode="cool",
@@ -323,4 +359,10 @@ class DaikinAcAccessory(Accessory):
             fan=self.fan,
             swing_vertical=self.swing_vertical,
         )
-        self.controller.send(command)
+        self.driver.add_job(self._send_command, command)
+
+    def _send_command(self, command: DaikinCommand) -> None:
+        try:
+            self.controller.send(command)
+        except RuntimeError as exc:
+            LOGGER.warning("unable to send Daikin command: %s", exc)

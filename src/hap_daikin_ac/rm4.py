@@ -118,62 +118,43 @@ def select_device(
     return devices[0]
 
 
-def send_ir_packet(
+def authenticate_device(device: Any) -> None:
+    from broadlink.exceptions import BroadlinkException
+
+    try:
+        device.auth()
+    except BroadlinkException as exc:
+        raise RuntimeError(f"Broadlink authentication failed: {exc}") from exc
+
+
+def send_ir_packet_to_device(
+    device: Any,
     packet: bytes,
     *,
-    host: str | None = None,
-    mac: str | None = None,
-    timeout: int = 5,
     repeats: int = 1,
     repeat_delay: float = 0.4,
-    local_ip_address: str | None = None,
-    discover_ip_address: str | None = None,
-) -> Any:
+) -> None:
     from broadlink.exceptions import BroadlinkException
 
     if repeats < 1:
         raise ValueError("repeats must be at least 1")
 
-    device = select_device(
-        host=host,
-        mac=mac,
-        timeout=timeout,
-        local_ip_address=local_ip_address,
-        discover_ip_address=discover_ip_address,
-    )
     try:
-        device.auth()
         for index in range(repeats):
             device.send_data(packet)
             if index < repeats - 1:
                 time.sleep(repeat_delay)
     except BroadlinkException as exc:
         raise RuntimeError(f"Broadlink send failed: {exc}") from exc
-    return device
 
 
-def read_sensors(
-    *,
-    host: str | None = None,
-    mac: str | None = None,
-    timeout: int = 5,
-    local_ip_address: str | None = None,
-    discover_ip_address: str | None = None,
-) -> Rm4SensorReadings:
+def read_device_sensors(device: Any) -> Rm4SensorReadings:
     from broadlink.exceptions import BroadlinkException
 
-    device = select_device(
-        host=host,
-        mac=mac,
-        timeout=timeout,
-        local_ip_address=local_ip_address,
-        discover_ip_address=discover_ip_address,
-    )
     if not hasattr(device, "check_sensors"):
         raise RuntimeError(f"{device_summary(device)} does not expose RM4 sensors")
 
     try:
-        device.auth()
         raw = device.check_sensors()
     except BroadlinkException as exc:
         raise RuntimeError(f"Broadlink sensor read failed: {exc}") from exc
@@ -185,3 +166,53 @@ def read_sensors(
         humidity=float(humidity) if humidity is not None else None,
         raw=raw,
     )
+
+
+def send_ir_packet(
+    packet: bytes,
+    *,
+    host: str | None = None,
+    mac: str | None = None,
+    timeout: int = 5,
+    repeats: int = 1,
+    repeat_delay: float = 0.4,
+    local_ip_address: str | None = None,
+    discover_ip_address: str | None = None,
+) -> Any:
+    if repeats < 1:
+        raise ValueError("repeats must be at least 1")
+
+    device = select_device(
+        host=host,
+        mac=mac,
+        timeout=timeout,
+        local_ip_address=local_ip_address,
+        discover_ip_address=discover_ip_address,
+    )
+    authenticate_device(device)
+    send_ir_packet_to_device(
+        device,
+        packet,
+        repeats=repeats,
+        repeat_delay=repeat_delay,
+    )
+    return device
+
+
+def read_sensors(
+    *,
+    host: str | None = None,
+    mac: str | None = None,
+    timeout: int = 5,
+    local_ip_address: str | None = None,
+    discover_ip_address: str | None = None,
+) -> Rm4SensorReadings:
+    device = select_device(
+        host=host,
+        mac=mac,
+        timeout=timeout,
+        local_ip_address=local_ip_address,
+        discover_ip_address=discover_ip_address,
+    )
+    authenticate_device(device)
+    return read_device_sensors(device)
