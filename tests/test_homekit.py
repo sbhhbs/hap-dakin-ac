@@ -5,10 +5,12 @@ from hap_daikin_ac.homekit import (
     BroadlinkTarget,
     DaikinAcAccessory,
     DaikinFanAccessory,
+    DaikinModeSwitchAccessory,
+    DaikinQuietSwitchAccessory,
     fan_to_rotation_speed,
     rotation_speed_to_fan,
 )
-from hap_daikin_ac.protocol import DaikinCommand
+from hap_daikin_ac.protocol import DaikinCommand, Mode
 from hap_daikin_ac.rm4 import Rm4SensorReadings
 
 
@@ -26,6 +28,7 @@ def test_rotation_speed_maps_to_five_daikin_speeds() -> None:
 
 def test_fan_to_rotation_speed() -> None:
     assert fan_to_rotation_speed("auto") == 0
+    assert fan_to_rotation_speed("quiet") == 0
     assert fan_to_rotation_speed("5") == 100
     assert fan_to_rotation_speed(1) == 20
     assert fan_to_rotation_speed(5) == 100
@@ -171,6 +174,185 @@ def test_fan_accessory_controls_shared_ac_state() -> None:
     assert fan_accessory.char_active.value == 1
     assert fan_accessory.char_rotation_speed.value == 80
     assert len(controller.commands) == 1
+
+
+def test_mode_switches_are_mutually_exclusive_and_default_to_cool() -> None:
+    controller = RecordingController()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    driver.add_job = lambda target, *args: target(*args)
+    ac_accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=controller,
+        sensor_poll_interval=0,
+    )
+    dry_switch = DaikinModeSwitchAccessory(
+        driver,
+        "Test AC Dry Mode",
+        ac_accessory=ac_accessory,
+        mode=Mode.DRY,
+    )
+    fan_mode_switch = DaikinModeSwitchAccessory(
+        driver,
+        "Test AC Fan Mode",
+        ac_accessory=ac_accessory,
+        mode=Mode.FAN,
+    )
+    ac_accessory.register_mode_switch_accessory(dry_switch)
+    ac_accessory.register_mode_switch_accessory(fan_mode_switch)
+
+    dry_switch.set_on(True)
+    dry_switch.handle_switch_write({"On": True})
+    fan_mode_switch.set_on(True)
+    fan_mode_switch.handle_switch_write({"On": True})
+    fan_mode_switch.set_on(False)
+    fan_mode_switch.handle_switch_write({"On": False})
+
+    assert ac_accessory.active is True
+    assert ac_accessory.mode == Mode.COOL
+    assert dry_switch.char_on.value is False
+    assert fan_mode_switch.char_on.value is False
+    assert [command.mode for command in controller.commands] == [
+        Mode.DRY,
+        Mode.FAN,
+        Mode.COOL,
+    ]
+    assert all(command.power for command in controller.commands)
+
+
+def test_fan_off_powers_off_ac_and_clears_mode_switches() -> None:
+    controller = RecordingController()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    driver.add_job = lambda target, *args: target(*args)
+    ac_accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=controller,
+        sensor_poll_interval=0,
+    )
+    fan_accessory = DaikinFanAccessory(
+        driver,
+        "Test AC Fan",
+        ac_accessory=ac_accessory,
+    )
+    dry_switch = DaikinModeSwitchAccessory(
+        driver,
+        "Test AC Dry Mode",
+        ac_accessory=ac_accessory,
+        mode=Mode.DRY,
+    )
+    ac_accessory.register_fan_accessory(fan_accessory)
+    ac_accessory.register_mode_switch_accessory(dry_switch)
+
+    dry_switch.set_on(True)
+    dry_switch.handle_switch_write({"On": True})
+    fan_accessory.set_active(0)
+    fan_accessory.handle_fan_write({"Active": 0})
+
+    assert ac_accessory.active is False
+    assert ac_accessory.mode == Mode.COOL
+    assert fan_accessory.char_active.value == 0
+    assert dry_switch.char_on.value is False
+    assert controller.commands[-1].power is False
+    assert controller.commands[-1].mode == Mode.COOL
+
+
+def test_quiet_switch_updates_shared_command_state() -> None:
+    controller = RecordingController()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    driver.add_job = lambda target, *args: target(*args)
+    ac_accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=controller,
+        sensor_poll_interval=0,
+    )
+    fan_accessory = DaikinFanAccessory(
+        driver,
+        "Test AC Fan",
+        ac_accessory=ac_accessory,
+    )
+    quiet_switch = DaikinQuietSwitchAccessory(
+        driver,
+        "Test AC Quiet Mode",
+        ac_accessory=ac_accessory,
+    )
+    ac_accessory.register_fan_accessory(fan_accessory)
+    ac_accessory.register_quiet_switch_accessory(quiet_switch)
+    ac_accessory.set_rotation_speed(80)
+
+    quiet_switch.set_on(True)
+    quiet_switch.handle_switch_write({"On": True})
+    assert ac_accessory.char_rotation_speed.value == 0
+    assert fan_accessory.char_rotation_speed.value == 0
+
+    ac_accessory.set_active(0)
+    ac_accessory.handle_hvac_write({"Active": 0})
+
+    assert controller.commands[0].quiet_mode is True
+    assert controller.commands[0].fan == "quiet"
+    assert controller.commands[0].power is True
+    assert controller.commands[-1].quiet_mode is False
+    assert controller.commands[-1].power is False
+    assert quiet_switch.char_on.value is False
+
+
+def test_manual_fan_speed_clears_quiet_mode() -> None:
+    controller = RecordingController()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    driver.add_job = lambda target, *args: target(*args)
+    ac_accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=controller,
+        sensor_poll_interval=0,
+    )
+    fan_accessory = DaikinFanAccessory(
+        driver,
+        "Test AC Fan",
+        ac_accessory=ac_accessory,
+    )
+    quiet_switch = DaikinQuietSwitchAccessory(
+        driver,
+        "Test AC Quiet Mode",
+        ac_accessory=ac_accessory,
+    )
+    ac_accessory.register_fan_accessory(fan_accessory)
+    ac_accessory.register_quiet_switch_accessory(quiet_switch)
+
+    quiet_switch.set_on(True)
+    quiet_switch.handle_switch_write({"On": True})
+    fan_accessory.set_rotation_speed(80)
+    fan_accessory.handle_fan_write({"RotationSpeed": 80})
+
+    assert ac_accessory.active is True
+    assert ac_accessory.quiet_mode is False
+    assert ac_accessory.fan == 4
+    assert ac_accessory.char_rotation_speed.value == 80
+    assert fan_accessory.char_rotation_speed.value == 80
+    assert quiet_switch.char_on.value is False
+    assert controller.commands[-1].fan == 4
+    assert controller.commands[-1].quiet_mode is False
 
 
 def test_controller_discovers_once_and_reuses_bound_device(monkeypatch) -> None:

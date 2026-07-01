@@ -428,6 +428,8 @@ def run_homekit(args: argparse.Namespace) -> int:
         BroadlinkTarget,
         DaikinAcAccessory,
         DaikinFanAccessory,
+        DaikinModeSwitchAccessory,
+        DaikinQuietSwitchAccessory,
     )
 
     target = BroadlinkTarget(
@@ -460,12 +462,35 @@ def run_homekit(args: argparse.Namespace) -> int:
     )
     fan_accessory = DaikinFanAccessory(
         driver,
-        f"{args.name} Fan",
+        "Fan Speed",
+        ac_accessory=ac_accessory,
+    )
+    dry_switch_accessory = DaikinModeSwitchAccessory(
+        driver,
+        "Dry",
+        ac_accessory=ac_accessory,
+        mode="dry",
+    )
+    fan_mode_switch_accessory = DaikinModeSwitchAccessory(
+        driver,
+        "Fan",
+        ac_accessory=ac_accessory,
+        mode="fan",
+    )
+    quiet_switch_accessory = DaikinQuietSwitchAccessory(
+        driver,
+        "Quiet",
         ac_accessory=ac_accessory,
     )
     ac_accessory.register_fan_accessory(fan_accessory)
+    ac_accessory.register_mode_switch_accessory(dry_switch_accessory)
+    ac_accessory.register_mode_switch_accessory(fan_mode_switch_accessory)
+    ac_accessory.register_quiet_switch_accessory(quiet_switch_accessory)
     bridge.add_accessory(ac_accessory)
     bridge.add_accessory(fan_accessory)
+    bridge.add_accessory(dry_switch_accessory)
+    bridge.add_accessory(fan_mode_switch_accessory)
+    bridge.add_accessory(quiet_switch_accessory)
     driver.add_accessory(accessory=bridge)
     driver.start()
     return 0

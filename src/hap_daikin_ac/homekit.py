@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from pyhap.accessory import Accessory
-from pyhap.const import CATEGORY_AIR_CONDITIONER, CATEGORY_FAN
+from pyhap.const import CATEGORY_AIR_CONDITIONER, CATEGORY_FAN, CATEGORY_SWITCH
 
 from .broadlink_codec import format_hex, pulses_to_broadlink_packet
-from .protocol import DaikinCommand, MAX_TEMP_C, MIN_TEMP_C, state_to_pulses
+from .protocol import DaikinCommand, MAX_TEMP_C, MIN_TEMP_C, Mode, state_to_pulses
 from .rm4 import (
     Rm4SensorReadings,
     authenticate_device,
@@ -30,6 +30,7 @@ ACTIVE_INACTIVE = 0
 ACTIVE_ACTIVE = 1
 
 CURRENT_STATE_INACTIVE = 0
+CURRENT_STATE_IDLE = 1
 CURRENT_STATE_COOLING = 3
 
 TARGET_STATE_HEAT = 1
@@ -64,7 +65,7 @@ def rotation_speed_to_fan(value: float | int) -> int | str:
 def fan_to_rotation_speed(fan: int | str) -> int:
     if isinstance(fan, str):
         normalized = fan.strip().lower()
-        if normalized == "auto":
+        if normalized in {"auto", "quiet", "silent"}:
             return 0
         if normalized.isdecimal():
             return max(1, min(5, int(normalized))) * 20
@@ -180,10 +181,14 @@ class DaikinAcAccessory(Accessory):
         self.target_temp = int(max(MIN_TEMP_C, min(MAX_TEMP_C, initial_temp)))
         self.current_temp = float(self.target_temp)
         self.current_humidity = 0.0
+        self.mode = Mode.COOL
         self.fan: int | str = initial_fan
         self.swing_vertical = False
+        self.quiet_mode = False
         self.sensor_poll_interval = sensor_poll_interval
         self.fan_accessory: DaikinFanAccessory | None = None
+        self.mode_switch_accessories: list[DaikinModeSwitchAccessory] = []
+        self.quiet_switch_accessory: DaikinQuietSwitchAccessory | None = None
 
         self.set_info_service(
             manufacturer="Daikin",
@@ -251,7 +256,7 @@ class DaikinAcAccessory(Accessory):
         self.char_rotation_speed = service.configure_char(
             "RotationSpeed",
             properties={"minValue": 0, "maxValue": 100, "minStep": 20},
-            value=fan_to_rotation_speed(self.fan),
+            value=self._display_rotation_speed(),
             setter_callback=self.set_rotation_speed,
         )
         self.char_swing = service.configure_char(
@@ -273,6 +278,20 @@ class DaikinAcAccessory(Accessory):
         self.fan_accessory = fan_accessory
         fan_accessory.update_from_ac(should_notify=False)
 
+    def register_mode_switch_accessory(
+        self,
+        mode_switch_accessory: "DaikinModeSwitchAccessory",
+    ) -> None:
+        self.mode_switch_accessories.append(mode_switch_accessory)
+        mode_switch_accessory.update_from_ac(should_notify=False)
+
+    def register_quiet_switch_accessory(
+        self,
+        quiet_switch_accessory: "DaikinQuietSwitchAccessory",
+    ) -> None:
+        self.quiet_switch_accessory = quiet_switch_accessory
+        quiet_switch_accessory.update_from_ac(should_notify=False)
+
     async def run(self) -> None:
         if self.sensor_poll_interval <= 0:
             return
@@ -289,8 +308,10 @@ class DaikinAcAccessory(Accessory):
 
     def set_active(self, value: int) -> None:
         self.active = value == ACTIVE_ACTIVE
+        if not self.active:
+            self.mode = Mode.COOL
+            self.quiet_mode = False
         self._publish_state()
-        self._sync_fan_accessory()
 
     def set_target_state(self, value: int) -> None:
         if value == TARGET_STATE_HEAT:
@@ -299,20 +320,22 @@ class DaikinAcAccessory(Accessory):
 
         # Some HomeKit clients, especially Siri, may request Auto even when it is
         # not advertised. This cooling-only accessory treats Auto as Cool.
+        self.mode = Mode.COOL
         self.char_target_state.set_value(TARGET_STATE_COOL, should_notify=True)
-        self._sync_fan_accessory()
+        self._sync_linked_accessories()
 
     def set_cooling_temperature(self, value: float) -> None:
         self.target_temp = int(round(value))
         self.char_cooling_temp.set_value(self.target_temp, should_notify=True)
 
     def set_rotation_speed(self, value: float) -> None:
+        self.quiet_mode = False
         self.fan = rotation_speed_to_fan(value)
         self.char_rotation_speed.set_value(
-            fan_to_rotation_speed(self.fan),
+            self._display_rotation_speed(),
             should_notify=True,
         )
-        self._sync_fan_accessory()
+        self._sync_linked_accessories()
 
     def set_swing(self, value: int) -> None:
         self.swing_vertical = value == SWING_ENABLED
@@ -320,7 +343,25 @@ class DaikinAcAccessory(Accessory):
             SWING_ENABLED if self.swing_vertical else SWING_DISABLED,
             should_notify=True,
         )
-        self._sync_fan_accessory()
+        self._sync_linked_accessories()
+
+    def set_mode_switch(self, mode: Mode | str, enabled: bool) -> None:
+        mode = Mode(str(mode).lower())
+        if mode not in {Mode.DRY, Mode.FAN}:
+            raise ValueError("mode switch must control dry or fan mode")
+
+        if enabled:
+            self.active = True
+            self.mode = mode
+        elif self.mode == mode:
+            self.mode = Mode.COOL
+        self._publish_state()
+
+    def set_quiet_mode(self, enabled: bool) -> None:
+        self.quiet_mode = bool(enabled)
+        if self.quiet_mode:
+            self.active = True
+        self._publish_state()
 
     def get_current_temperature(self) -> float:
         return self.current_temp
@@ -360,21 +401,43 @@ class DaikinAcAccessory(Accessory):
             should_notify=True,
         )
         self.char_current_state.set_value(
-            CURRENT_STATE_COOLING if self.active else CURRENT_STATE_INACTIVE,
+            self._current_heater_cooler_state(),
             should_notify=True,
         )
         self.char_target_state.set_value(TARGET_STATE_COOL, should_notify=True)
-        self._sync_fan_accessory()
+        self.char_rotation_speed.set_value(
+            self._display_rotation_speed(),
+            should_notify=True,
+        )
+        self._sync_linked_accessories()
+
+    def _current_heater_cooler_state(self) -> int:
+        if not self.active:
+            return CURRENT_STATE_INACTIVE
+        if self.mode in {Mode.COOL, Mode.DRY}:
+            return CURRENT_STATE_COOLING
+        return CURRENT_STATE_IDLE
 
     def _schedule_current_command(self) -> None:
         command = DaikinCommand(
             power=self.active,
-            mode="cool",
+            mode=self.mode,
             temp_c=self.target_temp,
-            fan=self.fan,
+            fan=self._command_fan(),
             swing_vertical=self.swing_vertical,
+            quiet_mode=self.quiet_mode,
         )
         self.driver.add_job(self._send_command, command)
+
+    def _display_rotation_speed(self) -> int:
+        if self.quiet_mode:
+            return 0
+        return fan_to_rotation_speed(self.fan)
+
+    def _command_fan(self) -> int | str:
+        if self.quiet_mode:
+            return "quiet"
+        return self.fan
 
     def _send_command(self, command: DaikinCommand) -> None:
         try:
@@ -382,9 +445,13 @@ class DaikinAcAccessory(Accessory):
         except RuntimeError as exc:
             LOGGER.warning("unable to send Daikin command: %s", exc)
 
-    def _sync_fan_accessory(self) -> None:
+    def _sync_linked_accessories(self) -> None:
         if self.fan_accessory is not None:
             self.fan_accessory.update_from_ac()
+        for mode_switch_accessory in self.mode_switch_accessories:
+            mode_switch_accessory.update_from_ac()
+        if self.quiet_switch_accessory is not None:
+            self.quiet_switch_accessory.update_from_ac()
 
 
 class DaikinFanAccessory(Accessory):
@@ -481,18 +548,122 @@ class DaikinFanAccessory(Accessory):
             else CURRENT_FAN_STATE_INACTIVE
         )
         target_state = (
-            TARGET_FAN_STATE_AUTO
-            if self.ac_accessory.fan == "auto"
-            else TARGET_FAN_STATE_MANUAL
+            TARGET_FAN_STATE_MANUAL
+            if self.ac_accessory.quiet_mode
+            else (
+                TARGET_FAN_STATE_AUTO
+                if self.ac_accessory.fan == "auto"
+                else TARGET_FAN_STATE_MANUAL
+            )
         )
         self.char_active.set_value(active, should_notify=should_notify)
         self.char_current_state.set_value(current_state, should_notify=should_notify)
         self.char_target_state.set_value(target_state, should_notify=should_notify)
         self.char_rotation_speed.set_value(
-            fan_to_rotation_speed(self.ac_accessory.fan),
+            self.ac_accessory._display_rotation_speed(),
             should_notify=should_notify,
         )
         self.char_swing.set_value(
             SWING_ENABLED if self.ac_accessory.swing_vertical else SWING_DISABLED,
+            should_notify=should_notify,
+        )
+
+
+class DaikinModeSwitchAccessory(Accessory):
+    """HomeKit switch for a mutually-exclusive Daikin operating mode."""
+
+    category = CATEGORY_SWITCH
+
+    def __init__(
+        self,
+        *args,
+        ac_accessory: DaikinAcAccessory,
+        mode: Mode | str,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.ac_accessory = ac_accessory
+        self.mode = Mode(str(mode).lower())
+        if self.mode not in {Mode.DRY, Mode.FAN}:
+            raise ValueError("mode switch must control dry or fan mode")
+
+        self.set_info_service(
+            manufacturer="Daikin",
+            model="IR AC mode switch via Broadlink RM4",
+            serial_number=f"hap-daikin-ac-{self.mode.value}-switch",
+            firmware_revision="0.1.0",
+        )
+
+        service = self.add_preload_service("Switch", chars=["Name"])
+        service.setter_callback = self.handle_switch_write
+        self.char_on = service.configure_char(
+            "On",
+            value=False,
+            setter_callback=self.set_on,
+        )
+        service.configure_char("Name", value=self.display_name)
+
+    def set_on(self, value: bool) -> None:
+        self.ac_accessory.set_mode_switch(self.mode, bool(value))
+        self.update_from_ac()
+
+    def handle_switch_write(self, chars: dict[str, object]) -> None:
+        if "On" not in chars:
+            return
+        if not self.ac_accessory.active and not bool(chars["On"]):
+            return
+        self.ac_accessory._schedule_current_command()
+
+    def update_from_ac(self, *, should_notify: bool = True) -> None:
+        self.char_on.set_value(
+            self.ac_accessory.active and self.ac_accessory.mode == self.mode,
+            should_notify=should_notify,
+        )
+
+
+class DaikinQuietSwitchAccessory(Accessory):
+    """HomeKit switch for Daikin quiet mode."""
+
+    category = CATEGORY_SWITCH
+
+    def __init__(
+        self,
+        *args,
+        ac_accessory: DaikinAcAccessory,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.ac_accessory = ac_accessory
+
+        self.set_info_service(
+            manufacturer="Daikin",
+            model="IR AC quiet switch via Broadlink RM4",
+            serial_number="hap-daikin-ac-quiet-switch",
+            firmware_revision="0.1.0",
+        )
+
+        service = self.add_preload_service("Switch", chars=["Name"])
+        service.setter_callback = self.handle_switch_write
+        self.char_on = service.configure_char(
+            "On",
+            value=False,
+            setter_callback=self.set_on,
+        )
+        service.configure_char("Name", value=self.display_name)
+
+    def set_on(self, value: bool) -> None:
+        self.ac_accessory.set_quiet_mode(bool(value))
+        self.update_from_ac()
+
+    def handle_switch_write(self, chars: dict[str, object]) -> None:
+        if "On" not in chars:
+            return
+        if not self.ac_accessory.active and not bool(chars["On"]):
+            return
+        self.ac_accessory._schedule_current_command()
+
+    def update_from_ac(self, *, should_notify: bool = True) -> None:
+        self.char_on.set_value(
+            self.ac_accessory.active and self.ac_accessory.quiet_mode,
             should_notify=should_notify,
         )

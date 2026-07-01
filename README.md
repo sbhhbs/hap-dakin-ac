@@ -73,7 +73,9 @@ poetry run hap-daikin-ac sensors --host 192.168.1.50 --json
 
 ## Run As A HomeKit Accessory
 
-The HomeKit server publishes a bridge with a cooling-only AC accessory and a separate Fan accessory. Heat mode is intentionally not advertised because this AC does not support it. Current temperature is read from the RM4 sensor and humidity is exposed as a separate HomeKit humidity sensor.
+The HomeKit server publishes a bridge with a cooling-only AC accessory, a separate Fan accessory, and switch accessories for Dry Mode, Fan Mode, and Quiet Mode. Heat mode is intentionally not advertised because this AC does not support it. Current temperature is read from the RM4 sensor and humidity is exposed as a separate HomeKit humidity sensor.
+
+Dry Mode and Fan Mode are mutually exclusive. If both switches are off, the AC uses Cool mode. Turning the Fan accessory off also turns the AC off and clears the mode switches. Quiet Mode behaves like a fan speed: while it is on, fan speed displays as 0, and changing the fan speed manually turns Quiet Mode off.
 
 ```bash
 export HAP_DAIKIN_RM4_MAC_ADDRESS=a0:43:b0:72:bb:64
