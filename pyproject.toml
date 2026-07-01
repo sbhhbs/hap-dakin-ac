@@ -1,0 +1,25 @@
+[project]
+name = "hap-daikin-ac"
+version = "0.1.0"
+description = "Generate Daikin IR frames and send them through a Broadlink RM4."
+authors = [
+    {name = "bob",email = "github@sbhhbs.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "broadlink (>=0.19.0,<0.20.0)"
+]
+
+[project.scripts]
+hap-daikin-ac = "hap_daikin_ac.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
