@@ -7,6 +7,8 @@ import os
 
 from .cli_env import (
     HOMEKIT_ADDRESS_ENV,
+    HOMEKIT_MAX_TEMP_ENV,
+    HOMEKIT_MIN_TEMP_ENV,
     HOMEKIT_NAME_ENV,
     HOMEKIT_PINCODE_ENV,
     HOMEKIT_PERSIST_FILE_ENV,
@@ -26,7 +28,7 @@ from .cli_env import (
     env_value,
     rm4_mac_from_env,
 )
-from .protocol import BASE_STATE, Mode
+from .protocol import BASE_STATE, MAX_TEMP_C, MIN_TEMP_C, Mode
 
 
 def add_logging_options(
@@ -193,6 +195,18 @@ def add_homekit_options(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=env_int("HAP_DAIKIN_INITIAL_TEMP", 24),
         help="initial cooling setpoint in C; env HAP_DAIKIN_INITIAL_TEMP",
+    )
+    parser.add_argument(
+        "--min-temp",
+        type=int,
+        default=env_int(HOMEKIT_MIN_TEMP_ENV, MIN_TEMP_C),
+        help=f"minimum HomeKit cooling setpoint in C; env {HOMEKIT_MIN_TEMP_ENV}",
+    )
+    parser.add_argument(
+        "--max-temp",
+        type=int,
+        default=env_int(HOMEKIT_MAX_TEMP_ENV, MAX_TEMP_C),
+        help=f"maximum HomeKit cooling setpoint in C; env {HOMEKIT_MAX_TEMP_ENV}",
     )
     parser.add_argument(
         "--initial-fan",

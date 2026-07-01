@@ -44,14 +44,19 @@ class DaikinAcAccessory(Accessory):
         *args,
         controller: BroadlinkDaikinController,
         initial_temp: int = 24,
+        min_temp: int = MIN_TEMP_C,
+        max_temp: int = MAX_TEMP_C,
         initial_fan: int | str = "auto",
         sensor_poll_interval: float = 60.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        validate_temperature_limits(min_temp, max_temp)
         self.controller = controller
         self.active = False
-        self.target_temp = int(max(MIN_TEMP_C, min(MAX_TEMP_C, initial_temp)))
+        self.min_temp = int(min_temp)
+        self.max_temp = int(max_temp)
+        self.target_temp = self._clamp_temp(initial_temp)
         self.current_temp = float(self.target_temp)
         self.current_humidity = 0.0
         self.mode = Mode.COOL
@@ -105,8 +110,8 @@ class DaikinAcAccessory(Accessory):
         self.char_current_temp = service.configure_char(
             "CurrentTemperature",
             properties={
-                "minValue": MIN_TEMP_C,
-                "maxValue": MAX_TEMP_C,
+                "minValue": self.min_temp,
+                "maxValue": self.max_temp,
                 "minStep": 1,
             },
             value=self.target_temp,
@@ -115,8 +120,8 @@ class DaikinAcAccessory(Accessory):
         self.char_cooling_temp = service.configure_char(
             "CoolingThresholdTemperature",
             properties={
-                "minValue": MIN_TEMP_C,
-                "maxValue": MAX_TEMP_C,
+                "minValue": self.min_temp,
+                "maxValue": self.max_temp,
                 "minStep": 1,
             },
             value=self.target_temp,
@@ -198,7 +203,7 @@ class DaikinAcAccessory(Accessory):
         self._sync_linked_accessories()
 
     def set_cooling_temperature(self, value: float) -> None:
-        self.target_temp = int(round(value))
+        self.target_temp = self._clamp_temp(value)
         self.char_cooling_temp.set_value(self.target_temp, should_notify=True)
 
     def set_rotation_speed(self, value: float) -> None:
@@ -312,6 +317,9 @@ class DaikinAcAccessory(Accessory):
             return "quiet"
         return self.fan
 
+    def _clamp_temp(self, value: float | int) -> int:
+        return int(max(self.min_temp, min(self.max_temp, round(value))))
+
     def _send_command(self, command: DaikinCommand) -> None:
         try:
             self.controller.send(command)
@@ -325,3 +333,13 @@ class DaikinAcAccessory(Accessory):
             mode_switch_accessory.update_from_ac()
         if self.quiet_switch_accessory is not None:
             self.quiet_switch_accessory.update_from_ac()
+
+
+def validate_temperature_limits(min_temp: int, max_temp: int) -> None:
+    if min_temp < MIN_TEMP_C or max_temp > MAX_TEMP_C:
+        raise ValueError(
+            f"temperature limits must stay within Daikin range "
+            f"{MIN_TEMP_C}..{MAX_TEMP_C} C"
+        )
+    if min_temp > max_temp:
+        raise ValueError("minimum temperature cannot be greater than maximum temperature")

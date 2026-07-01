@@ -97,8 +97,12 @@ export HAP_DAIKIN_HOMEKIT_ADDRESS=192.168.1.10
 export HAP_DAIKIN_HOMEKIT_PORT=51234
 export HAP_DAIKIN_HOMEKIT_PINCODE=031-45-154
 export HAP_DAIKIN_HOMEKIT_NAME="Daikin AC"
+export HAP_DAIKIN_MIN_TEMP=10
+export HAP_DAIKIN_MAX_TEMP=30
 export HAP_DAIKIN_SENSOR_INTERVAL=60
 ```
+
+`HAP_DAIKIN_MIN_TEMP` and `HAP_DAIKIN_MAX_TEMP` control the setpoint range shown in HomeKit. They must stay inside the Daikin IR protocol range of `10..30` C.
 
 For one-shot CLI commands, if `HAP_DAIKIN_RM4_HOST` is unset and `HAP_DAIKIN_RM4_MAC_ADDRESS` or `HAP_DAIKIN_RM4_MAC` is set, the command discovers the RM4 by MAC address and uses the discovered IP. This is the preferred setup for DHCP networks.
 

@@ -1,3 +1,5 @@
+import pytest
+
 from pyhap.accessory_driver import AccessoryDriver
 
 from hap_daikin_ac.homekit import (
@@ -130,6 +132,64 @@ def test_homekit_write_coalesces_single_async_send() -> None:
     assert command.power is True
     assert command.temp_c == 23
     assert command.fan == 5
+
+
+def test_homekit_temperature_range_is_configurable() -> None:
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=RecordingController(),
+        initial_temp=16,
+        min_temp=18,
+        max_temp=28,
+        sensor_poll_interval=0,
+    )
+
+    assert accessory.target_temp == 18
+    assert accessory.char_current_temp.properties["minValue"] == 18
+    assert accessory.char_current_temp.properties["maxValue"] == 28
+    assert accessory.char_cooling_temp.properties["minValue"] == 18
+    assert accessory.char_cooling_temp.properties["maxValue"] == 28
+
+    accessory.set_cooling_temperature(30)
+
+    assert accessory.target_temp == 28
+    assert accessory.char_cooling_temp.value == 28
+
+
+def test_homekit_temperature_range_must_fit_daikin_protocol() -> None:
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+
+    with pytest.raises(ValueError, match="temperature limits"):
+        DaikinAcAccessory(
+            driver,
+            "Test AC",
+            controller=RecordingController(),
+            min_temp=5,
+            max_temp=28,
+            sensor_poll_interval=0,
+        )
+
+    with pytest.raises(ValueError, match="minimum temperature"):
+        DaikinAcAccessory(
+            driver,
+            "Test AC",
+            controller=RecordingController(),
+            min_temp=28,
+            max_temp=18,
+            sensor_poll_interval=0,
+        )
 
 
 def test_fan_accessory_controls_shared_ac_state() -> None:

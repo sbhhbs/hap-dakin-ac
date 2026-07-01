@@ -28,6 +28,8 @@ def test_empty_env_values_fall_back_to_defaults(monkeypatch) -> None:
     monkeypatch.setenv("HAP_DAIKIN_RM4_DISCOVER_IP", "")
     monkeypatch.setenv("HAP_DAIKIN_HOMEKIT_PORT", "")
     monkeypatch.setenv("HAP_DAIKIN_SENSOR_INTERVAL", "")
+    monkeypatch.setenv("HAP_DAIKIN_MIN_TEMP", "")
+    monkeypatch.setenv("HAP_DAIKIN_MAX_TEMP", "")
 
     args = build_parser().parse_args(["homekit"])
 
@@ -38,6 +40,8 @@ def test_empty_env_values_fall_back_to_defaults(monkeypatch) -> None:
     assert args.discover_ip is None
     assert args.port == 51234
     assert args.sensor_interval == 60
+    assert args.min_temp == 10
+    assert args.max_temp == 30
 
 
 def test_broadlink_target_env_defaults(monkeypatch) -> None:
@@ -54,3 +58,13 @@ def test_broadlink_target_env_defaults(monkeypatch) -> None:
     assert args.discover_ip == "192.168.1.255"
     assert args.repeats == 3
     assert args.repeat_delay == 0.2
+
+
+def test_homekit_temperature_range_env_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("HAP_DAIKIN_MIN_TEMP", "18")
+    monkeypatch.setenv("HAP_DAIKIN_MAX_TEMP", "28")
+
+    args = build_parser().parse_args(["homekit"])
+
+    assert args.min_temp == 18
+    assert args.max_temp == 28

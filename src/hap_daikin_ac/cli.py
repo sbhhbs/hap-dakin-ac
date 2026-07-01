@@ -280,6 +280,8 @@ def run_homekit(args: argparse.Namespace) -> int:
         args.name,
         controller=controller,
         initial_temp=args.initial_temp,
+        min_temp=args.min_temp,
+        max_temp=args.max_temp,
         initial_fan=args.initial_fan,
         sensor_poll_interval=args.sensor_interval,
     )
