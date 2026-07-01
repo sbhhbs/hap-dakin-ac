@@ -381,17 +381,20 @@ def test_controller_discovers_once_and_reuses_bound_device(monkeypatch) -> None:
         calls["sensors"] += 1
         return Rm4SensorReadings(temperature=25, humidity=60, raw={})
 
-    monkeypatch.setattr("hap_daikin_ac.homekit.select_device", fake_select_device)
     monkeypatch.setattr(
-        "hap_daikin_ac.homekit.authenticate_device",
+        "hap_daikin_ac.homekit_controller.select_device",
+        fake_select_device,
+    )
+    monkeypatch.setattr(
+        "hap_daikin_ac.homekit_controller.authenticate_device",
         fake_authenticate_device,
     )
     monkeypatch.setattr(
-        "hap_daikin_ac.homekit.send_ir_packet_to_device",
+        "hap_daikin_ac.homekit_controller.send_ir_packet_to_device",
         fake_send_ir_packet_to_device,
     )
     monkeypatch.setattr(
-        "hap_daikin_ac.homekit.read_device_sensors",
+        "hap_daikin_ac.homekit_controller.read_device_sensors",
         fake_read_device_sensors,
     )
 
