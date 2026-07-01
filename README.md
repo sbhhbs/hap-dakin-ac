@@ -73,6 +73,8 @@ export HAP_DAIKIN_RM4_MAC_ADDRESS=a0:43:b0:72:bb:64
 poetry run hap-daikin-ac homekit
 ```
 
+The server prints a HomeKit QR code and pairing code on startup. Scan the QR code in the Home app, or enter the code manually.
+
 HomeKit server settings can be controlled with environment variables:
 
 ```bash

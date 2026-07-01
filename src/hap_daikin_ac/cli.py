@@ -386,6 +386,10 @@ def run_sensors(args: argparse.Namespace) -> int:
 
 
 def run_homekit(args: argparse.Namespace) -> int:
+    from .pyhap_compat import install_child_watcher_compat
+
+    install_child_watcher_compat()
+
     from pyhap.accessory_driver import AccessoryDriver
 
     from .homekit import BroadlinkDaikinController, BroadlinkTarget, DaikinAcAccessory
