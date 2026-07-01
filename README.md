@@ -130,6 +130,13 @@ docker run --rm --network host sbhhbs/hap-dakin-ac:latest discover
 docker run --rm --network host sbhhbs/hap-dakin-ac:latest sensors --mac a0:43:b0:72:bb:64
 ```
 
+Or use Docker Compose. The included [docker-compose.yml](docker-compose.yml) saves HomeKit pairing state in the `hap-daikin-ac-state` volume and exposes the supported environment variables with defaults that can be overridden from your shell or a local `.env` file.
+
+```bash
+docker compose up -d
+docker compose logs -f
+```
+
 ## Notes
 
 The default base state is the decoded `cool24` Daikin 280-bit state from the attached notes:

@@ -17,3 +17,40 @@ def test_short_rm4_mac_env_takes_precedence(monkeypatch) -> None:
     args = build_parser().parse_args(["sensors"])
 
     assert args.mac == "00:11:22:33:44:55"
+
+
+def test_empty_env_values_fall_back_to_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("HAP_DAIKIN_HOMEKIT_ADDRESS", "")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_HOST", "")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_MAC", "")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_MAC_ADDRESS", "")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_LOCAL_IP", "")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_DISCOVER_IP", "")
+    monkeypatch.setenv("HAP_DAIKIN_HOMEKIT_PORT", "")
+    monkeypatch.setenv("HAP_DAIKIN_SENSOR_INTERVAL", "")
+
+    args = build_parser().parse_args(["homekit"])
+
+    assert args.address is None
+    assert args.host is None
+    assert args.mac is None
+    assert args.local_ip is None
+    assert args.discover_ip is None
+    assert args.port == 51234
+    assert args.sensor_interval == 60
+
+
+def test_broadlink_target_env_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("HAP_DAIKIN_RM4_TIMEOUT", "9")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_LOCAL_IP", "192.168.1.20")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_DISCOVER_IP", "192.168.1.255")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_REPEATS", "3")
+    monkeypatch.setenv("HAP_DAIKIN_RM4_REPEAT_DELAY", "0.2")
+
+    args = build_parser().parse_args(["homekit"])
+
+    assert args.timeout == 9
+    assert args.local_ip == "192.168.1.20"
+    assert args.discover_ip == "192.168.1.255"
+    assert args.repeats == 3
+    assert args.repeat_delay == 0.2

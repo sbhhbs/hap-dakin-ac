@@ -24,10 +24,37 @@ LOG_LEVEL_ENV = "HAP_DAIKIN_LOG_LEVEL"
 RM4_HOST_ENV = "HAP_DAIKIN_RM4_HOST"
 RM4_MAC_ENV = "HAP_DAIKIN_RM4_MAC"
 RM4_MAC_ADDRESS_ENV = "HAP_DAIKIN_RM4_MAC_ADDRESS"
+RM4_TIMEOUT_ENV = "HAP_DAIKIN_RM4_TIMEOUT"
+RM4_LOCAL_IP_ENV = "HAP_DAIKIN_RM4_LOCAL_IP"
+RM4_DISCOVER_IP_ENV = "HAP_DAIKIN_RM4_DISCOVER_IP"
+RM4_REPEATS_ENV = "HAP_DAIKIN_RM4_REPEATS"
+RM4_REPEAT_DELAY_ENV = "HAP_DAIKIN_RM4_REPEAT_DELAY"
+
+
+def env_value(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return value
+
+
+def env_int(name: str, default: int) -> int:
+    return int(env_value(name, str(default)))
+
+
+def env_float(name: str, default: float) -> float:
+    return float(env_value(name, str(default)))
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = env_value(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes"}
 
 
 def rm4_mac_from_env() -> str | None:
-    return os.getenv(RM4_MAC_ENV) or os.getenv(RM4_MAC_ADDRESS_ENV)
+    return env_value(RM4_MAC_ENV) or env_value(RM4_MAC_ADDRESS_ENV)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -124,9 +151,9 @@ def add_logging_options(
     *,
     with_defaults: bool = False,
 ) -> None:
-    default_level = os.getenv(LOG_LEVEL_ENV, "INFO") if with_defaults else argparse.SUPPRESS
+    default_level = env_value(LOG_LEVEL_ENV, "INFO") if with_defaults else argparse.SUPPRESS
     default_no_color = (
-        os.getenv("NO_COLOR") is not None or os.getenv("HAP_DAIKIN_NO_COLOR") in {"1", "true", "yes"}
+        os.getenv("NO_COLOR") is not None or env_bool("HAP_DAIKIN_NO_COLOR")
         if with_defaults
         else argparse.SUPPRESS
     )
@@ -194,9 +221,22 @@ def add_daikin_options(parser: argparse.ArgumentParser) -> None:
 
 
 def add_discovery_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--timeout", type=int, default=5, help="network timeout seconds")
-    parser.add_argument("--local-ip", help="local interface IP for discovery")
-    parser.add_argument("--discover-ip", help="broadcast or device IP for discovery")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=env_int(RM4_TIMEOUT_ENV, 5),
+        help=f"network timeout seconds; env {RM4_TIMEOUT_ENV}",
+    )
+    parser.add_argument(
+        "--local-ip",
+        default=env_value(RM4_LOCAL_IP_ENV),
+        help=f"local interface IP for discovery; env {RM4_LOCAL_IP_ENV}",
+    )
+    parser.add_argument(
+        "--discover-ip",
+        default=env_value(RM4_DISCOVER_IP_ENV),
+        help=f"broadcast or device IP for discovery; env {RM4_DISCOVER_IP_ENV}",
+    )
 
 
 def add_broadlink_target_options(
@@ -207,7 +247,7 @@ def add_broadlink_target_options(
     add_discovery_options(parser)
     parser.add_argument(
         "--host",
-        default=os.getenv(RM4_HOST_ENV),
+        default=env_value(RM4_HOST_ENV),
         help=f"RM4 IP address; skips broadcast discovery; env {RM4_HOST_ENV}",
     )
     parser.add_argument(
@@ -221,19 +261,24 @@ def add_broadlink_target_options(
     if not include_send_options:
         return
 
-    parser.add_argument("--repeats", type=int, default=1, help="number of sends")
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=env_int(RM4_REPEATS_ENV, 1),
+        help=f"number of sends; env {RM4_REPEATS_ENV}",
+    )
     parser.add_argument(
         "--repeat-delay",
         type=float,
-        default=0.4,
-        help="seconds between repeated sends",
+        default=env_float(RM4_REPEAT_DELAY_ENV, 0.4),
+        help=f"seconds between repeated sends; env {RM4_REPEAT_DELAY_ENV}",
     )
 
 
 def add_homekit_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--address",
-        default=os.getenv(HOMEKIT_ADDRESS_ENV),
+        default=env_value(HOMEKIT_ADDRESS_ENV),
         help=(
             "HomeKit server address; defaults to HAP-python auto-detection; "
             f"env {HOMEKIT_ADDRESS_ENV}"
@@ -242,45 +287,45 @@ def add_homekit_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv(HOMEKIT_PORT_ENV, "51234")),
+        default=env_int(HOMEKIT_PORT_ENV, 51234),
         help=f"HomeKit server port; env {HOMEKIT_PORT_ENV}",
     )
     parser.add_argument(
         "--pincode",
-        default=os.getenv(HOMEKIT_PINCODE_ENV, "031-45-154"),
+        default=env_value(HOMEKIT_PINCODE_ENV, "031-45-154"),
         help=f"HomeKit pairing code; env {HOMEKIT_PINCODE_ENV}",
     )
     parser.add_argument(
         "--persist-file",
-        default=os.getenv(HOMEKIT_PERSIST_FILE_ENV, ".hap-daikin-ac.state"),
+        default=env_value(HOMEKIT_PERSIST_FILE_ENV, ".hap-daikin-ac.state"),
         help=f"HomeKit pairing state file; env {HOMEKIT_PERSIST_FILE_ENV}",
     )
     parser.add_argument(
         "--name",
-        default=os.getenv(HOMEKIT_NAME_ENV, "Daikin AC"),
+        default=env_value(HOMEKIT_NAME_ENV, "Daikin AC"),
         help=f"HomeKit accessory name; env {HOMEKIT_NAME_ENV}",
     )
     parser.add_argument(
         "--initial-temp",
         type=int,
-        default=int(os.getenv("HAP_DAIKIN_INITIAL_TEMP", "24")),
+        default=env_int("HAP_DAIKIN_INITIAL_TEMP", 24),
         help="initial cooling setpoint in C; env HAP_DAIKIN_INITIAL_TEMP",
     )
     parser.add_argument(
         "--initial-fan",
-        default=os.getenv("HAP_DAIKIN_INITIAL_FAN", "auto"),
+        default=env_value("HAP_DAIKIN_INITIAL_FAN", "auto"),
         help="initial fan speed: auto or 1..5; env HAP_DAIKIN_INITIAL_FAN",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        default=os.getenv("HAP_DAIKIN_DRY_RUN", "").lower() in {"1", "true", "yes"},
+        default=env_bool("HAP_DAIKIN_DRY_RUN"),
         help="log generated Broadlink packets instead of sending them",
     )
     parser.add_argument(
         "--sensor-interval",
         type=float,
-        default=float(os.getenv("HAP_DAIKIN_SENSOR_INTERVAL", "60")),
+        default=env_float("HAP_DAIKIN_SENSOR_INTERVAL", 60),
         help=(
             "seconds between RM4 sensor refreshes in HomeKit; "
             "env HAP_DAIKIN_SENSOR_INTERVAL; use 0 to disable polling"
