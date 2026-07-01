@@ -30,7 +30,7 @@ htmlcov/
 # Local environment
 .env
 .env.*
+.hap-daikin-ac.state
 
 # macOS
 .DS_Store
-

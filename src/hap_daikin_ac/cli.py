@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import logging
+import os
 from typing import Any
 
 from .broadlink_codec import (
@@ -12,6 +15,19 @@ from .broadlink_codec import (
     pulses_to_pronto_hex,
 )
 from .protocol import BASE_STATE, DaikinCommand, Mode, state_from_hex, state_to_pulses
+
+HOMEKIT_ADDRESS_ENV = "HAP_DAIKIN_HOMEKIT_ADDRESS"
+HOMEKIT_PORT_ENV = "HAP_DAIKIN_HOMEKIT_PORT"
+HOMEKIT_PINCODE_ENV = "HAP_DAIKIN_HOMEKIT_PINCODE"
+HOMEKIT_PERSIST_FILE_ENV = "HAP_DAIKIN_HOMEKIT_PERSIST_FILE"
+HOMEKIT_NAME_ENV = "HAP_DAIKIN_HOMEKIT_NAME"
+RM4_HOST_ENV = "HAP_DAIKIN_RM4_HOST"
+RM4_MAC_ENV = "HAP_DAIKIN_RM4_MAC"
+RM4_MAC_ADDRESS_ENV = "HAP_DAIKIN_RM4_MAC_ADDRESS"
+
+
+def rm4_mac_from_env() -> str | None:
+    return os.getenv(RM4_MAC_ENV) or os.getenv(RM4_MAC_ADDRESS_ENV)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,6 +88,28 @@ def build_parser() -> argparse.ArgumentParser:
     add_discovery_options(discover_parser)
     discover_parser.set_defaults(func=run_discover)
 
+    sensors_parser = subparsers.add_parser(
+        "sensors",
+        help="read temperature and humidity from the Broadlink RM4 sensors",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_broadlink_target_options(sensors_parser, include_send_options=False)
+    sensors_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print sensor readings as JSON",
+    )
+    sensors_parser.set_defaults(func=run_sensors)
+
+    homekit_parser = subparsers.add_parser(
+        "homekit",
+        help="run a HomeKit AC accessory backed by the Broadlink RM4",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_homekit_options(homekit_parser)
+    add_broadlink_target_options(homekit_parser)
+    homekit_parser.set_defaults(func=run_homekit)
+
     return parser
 
 
@@ -131,16 +169,92 @@ def add_discovery_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--discover-ip", help="broadcast or device IP for discovery")
 
 
-def add_broadlink_target_options(parser: argparse.ArgumentParser) -> None:
+def add_broadlink_target_options(
+    parser: argparse.ArgumentParser,
+    *,
+    include_send_options: bool = True,
+) -> None:
     add_discovery_options(parser)
-    parser.add_argument("--host", help="RM4 IP address; skips broadcast discovery")
-    parser.add_argument("--mac", help="optional RM4 MAC address filter")
+    parser.add_argument(
+        "--host",
+        default=os.getenv(RM4_HOST_ENV),
+        help=f"RM4 IP address; skips broadcast discovery; env {RM4_HOST_ENV}",
+    )
+    parser.add_argument(
+        "--mac",
+        default=rm4_mac_from_env(),
+        help=(
+            "optional RM4 MAC address filter; when --host is absent, discovery "
+            f"selects the RM4 by MAC; env {RM4_MAC_ENV} or {RM4_MAC_ADDRESS_ENV}"
+        ),
+    )
+    if not include_send_options:
+        return
+
     parser.add_argument("--repeats", type=int, default=1, help="number of sends")
     parser.add_argument(
         "--repeat-delay",
         type=float,
         default=0.4,
         help="seconds between repeated sends",
+    )
+
+
+def add_homekit_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--address",
+        default=os.getenv(HOMEKIT_ADDRESS_ENV),
+        help=(
+            "HomeKit server address; defaults to HAP-python auto-detection; "
+            f"env {HOMEKIT_ADDRESS_ENV}"
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv(HOMEKIT_PORT_ENV, "51234")),
+        help=f"HomeKit server port; env {HOMEKIT_PORT_ENV}",
+    )
+    parser.add_argument(
+        "--pincode",
+        default=os.getenv(HOMEKIT_PINCODE_ENV, "031-45-154"),
+        help=f"HomeKit pairing code; env {HOMEKIT_PINCODE_ENV}",
+    )
+    parser.add_argument(
+        "--persist-file",
+        default=os.getenv(HOMEKIT_PERSIST_FILE_ENV, ".hap-daikin-ac.state"),
+        help=f"HomeKit pairing state file; env {HOMEKIT_PERSIST_FILE_ENV}",
+    )
+    parser.add_argument(
+        "--name",
+        default=os.getenv(HOMEKIT_NAME_ENV, "Daikin AC"),
+        help=f"HomeKit accessory name; env {HOMEKIT_NAME_ENV}",
+    )
+    parser.add_argument(
+        "--initial-temp",
+        type=int,
+        default=int(os.getenv("HAP_DAIKIN_INITIAL_TEMP", "24")),
+        help="initial cooling setpoint in C; env HAP_DAIKIN_INITIAL_TEMP",
+    )
+    parser.add_argument(
+        "--initial-fan",
+        default=os.getenv("HAP_DAIKIN_INITIAL_FAN", "auto"),
+        help="initial fan speed: auto or 1..5; env HAP_DAIKIN_INITIAL_FAN",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=os.getenv("HAP_DAIKIN_DRY_RUN", "").lower() in {"1", "true", "yes"},
+        help="log generated Broadlink packets instead of sending them",
+    )
+    parser.add_argument(
+        "--sensor-interval",
+        type=float,
+        default=float(os.getenv("HAP_DAIKIN_SENSOR_INTERVAL", "60")),
+        help=(
+            "seconds between RM4 sensor refreshes in HomeKit; "
+            "env HAP_DAIKIN_SENSOR_INTERVAL; use 0 to disable polling"
+        ),
     )
 
 
@@ -235,6 +349,80 @@ def run_discover(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_sensors(args: argparse.Namespace) -> int:
+    from .rm4 import read_sensors
+
+    readings = read_sensors(
+        host=args.host,
+        mac=args.mac,
+        timeout=args.timeout,
+        local_ip_address=args.local_ip,
+        discover_ip_address=args.discover_ip,
+    )
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "temperature": readings.temperature,
+                    "humidity": readings.humidity,
+                    "raw": readings.raw,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if readings.temperature is not None:
+        print(f"temperature: {readings.temperature:.2f} C")
+    else:
+        print("temperature: unavailable")
+
+    if readings.humidity is not None:
+        print(f"humidity: {readings.humidity:.2f} %")
+    else:
+        print("humidity: unavailable")
+    return 0
+
+
+def run_homekit(args: argparse.Namespace) -> int:
+    from pyhap.accessory_driver import AccessoryDriver
+
+    from .homekit import BroadlinkDaikinController, BroadlinkTarget, DaikinAcAccessory
+
+    logging.basicConfig(level=logging.INFO)
+
+    target = BroadlinkTarget(
+        host=args.host,
+        mac=args.mac,
+        timeout=args.timeout,
+        repeats=args.repeats,
+        repeat_delay=args.repeat_delay,
+        local_ip_address=args.local_ip,
+        discover_ip_address=args.discover_ip,
+        dry_run=args.dry_run,
+        sensor_cache_ttl=args.sensor_interval,
+    )
+    controller = BroadlinkDaikinController(target)
+    driver = AccessoryDriver(
+        address=args.address,
+        port=args.port,
+        persist_file=args.persist_file,
+        pincode=args.pincode.encode("ascii"),
+    )
+    accessory = DaikinAcAccessory(
+        driver,
+        args.name,
+        controller=controller,
+        initial_temp=args.initial_temp,
+        initial_fan=args.initial_fan,
+        sensor_poll_interval=args.sensor_interval,
+    )
+    driver.add_accessory(accessory=accessory)
+    driver.start()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -246,4 +434,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 from typing import Any
+
+
+@dataclass(frozen=True)
+class Rm4SensorReadings:
+    temperature: float | None = None
+    humidity: float | None = None
+    raw: dict[str, Any] | None = None
 
 
 def normalize_mac(value: str) -> str:
@@ -95,9 +103,14 @@ def select_device(
     ]
 
     if mac:
-        devices = [device for device in devices if mac_matches(device, mac)]
+        target_mac = normalize_mac(mac)
+        devices = [device for device in devices if mac_matches(device, target_mac)]
 
     if not devices:
+        if mac:
+            raise RuntimeError(
+                f"no Broadlink RM device found matching MAC {normalize_mac(mac)}"
+            )
         raise RuntimeError("no Broadlink RM device found")
     if len(devices) > 1:
         summaries = "\n".join(f"  - {device_summary(device)}" for device in devices)
@@ -137,3 +150,38 @@ def send_ir_packet(
     except BroadlinkException as exc:
         raise RuntimeError(f"Broadlink send failed: {exc}") from exc
     return device
+
+
+def read_sensors(
+    *,
+    host: str | None = None,
+    mac: str | None = None,
+    timeout: int = 5,
+    local_ip_address: str | None = None,
+    discover_ip_address: str | None = None,
+) -> Rm4SensorReadings:
+    from broadlink.exceptions import BroadlinkException
+
+    device = select_device(
+        host=host,
+        mac=mac,
+        timeout=timeout,
+        local_ip_address=local_ip_address,
+        discover_ip_address=discover_ip_address,
+    )
+    if not hasattr(device, "check_sensors"):
+        raise RuntimeError(f"{device_summary(device)} does not expose RM4 sensors")
+
+    try:
+        device.auth()
+        raw = device.check_sensors()
+    except BroadlinkException as exc:
+        raise RuntimeError(f"Broadlink sensor read failed: {exc}") from exc
+
+    temperature = raw.get("temperature")
+    humidity = raw.get("humidity")
+    return Rm4SensorReadings(
+        temperature=float(temperature) if temperature is not None else None,
+        humidity=float(humidity) if humidity is not None else None,
+        raw=raw,
+    )
