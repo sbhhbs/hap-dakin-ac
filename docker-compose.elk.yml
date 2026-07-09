@@ -1,6 +1,6 @@
 services:
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.17.0}
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-9.4.3}
     container_name: ${ELASTICSEARCH_CONTAINER_NAME:-hap-daikin-elasticsearch}
     restart: unless-stopped
     environment:
@@ -15,7 +15,7 @@ services:
       - hap-daikin-elasticsearch:/usr/share/elasticsearch/data
 
   logstash:
-    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION:-8.17.0}
+    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION:-9.4.3}
     container_name: ${LOGSTASH_CONTAINER_NAME:-hap-daikin-logstash}
     restart: unless-stopped
     depends_on:
@@ -30,7 +30,7 @@ services:
       - ./elk/logstash/templates:/usr/share/logstash/templates:ro
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-8.17.0}
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-9.4.3}
     container_name: ${KIBANA_CONTAINER_NAME:-hap-daikin-kibana}
     restart: unless-stopped
     depends_on:

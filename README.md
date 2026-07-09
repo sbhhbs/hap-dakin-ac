@@ -162,6 +162,8 @@ If you want a single ELK compose file with no external bind-mounted config files
 docker compose -f docker-compose.elk.standalone.yml up -d
 ```
 
+The default Elastic Stack version is `9.4.3`. If you already have an Elasticsearch volume from `8.17.0`, Elasticsearch will not upgrade that data path directly to `9.4.3`; upgrade through `8.19.0` first, or start with a fresh ELK volume if losing the dashboard history is acceptable.
+
 ## Notes
 
 The default base state is the decoded `cool24` Daikin 280-bit state from the attached notes:
