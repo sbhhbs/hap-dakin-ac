@@ -15,6 +15,7 @@ from .homekit_common import (
     CURRENT_STATE_COOLING,
     CURRENT_STATE_IDLE,
     CURRENT_STATE_INACTIVE,
+    QUIET_ROTATION_SPEED,
     SWING_DISABLED,
     SWING_ENABLED,
     TARGET_STATE_COOL,
@@ -22,6 +23,7 @@ from .homekit_common import (
     TEMP_DISPLAY_CELSIUS,
     fan_to_rotation_speed,
     rotation_speed_to_fan,
+    set_rotation_speed_display,
 )
 from .homekit_controller import BroadlinkDaikinController, BroadlinkTarget
 from .homekit_controls import (
@@ -134,8 +136,13 @@ class DaikinAcAccessory(Accessory):
         self.char_rotation_speed = service.configure_char(
             "RotationSpeed",
             properties={"minValue": 0, "maxValue": 100, "minStep": 20},
-            value=self._display_rotation_speed(),
+            value=0,
             setter_callback=self.set_rotation_speed,
+        )
+        set_rotation_speed_display(
+            self.char_rotation_speed,
+            self._display_rotation_speed(),
+            should_notify=False,
         )
         self.char_swing = service.configure_char(
             "SwingMode",
@@ -209,7 +216,8 @@ class DaikinAcAccessory(Accessory):
     def set_rotation_speed(self, value: float) -> None:
         self.quiet_mode = False
         self.fan = rotation_speed_to_fan(value)
-        self.char_rotation_speed.set_value(
+        set_rotation_speed_display(
+            self.char_rotation_speed,
             self._display_rotation_speed(),
             should_notify=True,
         )
@@ -283,7 +291,8 @@ class DaikinAcAccessory(Accessory):
             should_notify=True,
         )
         self.char_target_state.set_value(TARGET_STATE_COOL, should_notify=True)
-        self.char_rotation_speed.set_value(
+        set_rotation_speed_display(
+            self.char_rotation_speed,
             self._display_rotation_speed(),
             should_notify=True,
         )
@@ -309,7 +318,7 @@ class DaikinAcAccessory(Accessory):
 
     def _display_rotation_speed(self) -> int:
         if self.quiet_mode:
-            return 0
+            return QUIET_ROTATION_SPEED
         return fan_to_rotation_speed(self.fan)
 
     def _command_fan(self) -> int | str:

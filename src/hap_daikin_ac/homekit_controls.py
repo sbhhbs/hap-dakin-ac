@@ -18,6 +18,7 @@ from .homekit_common import (
     TARGET_FAN_STATE_AUTO,
     TARGET_FAN_STATE_MANUAL,
     fan_to_rotation_speed,
+    set_rotation_speed_display,
 )
 from .protocol import Mode
 
@@ -75,8 +76,13 @@ class DaikinFanAccessory(Accessory):
         self.char_rotation_speed = service.configure_char(
             "RotationSpeed",
             properties={"minValue": 0, "maxValue": 100, "minStep": 20},
-            value=fan_to_rotation_speed(self.ac_accessory.fan),
+            value=0,
             setter_callback=self.set_rotation_speed,
+        )
+        set_rotation_speed_display(
+            self.char_rotation_speed,
+            fan_to_rotation_speed(self.ac_accessory.fan),
+            should_notify=False,
         )
         self.char_swing = service.configure_char(
             "SwingMode",
@@ -130,7 +136,8 @@ class DaikinFanAccessory(Accessory):
         self.char_active.set_value(active, should_notify=should_notify)
         self.char_current_state.set_value(current_state, should_notify=should_notify)
         self.char_target_state.set_value(target_state, should_notify=should_notify)
-        self.char_rotation_speed.set_value(
+        set_rotation_speed_display(
+            self.char_rotation_speed,
             self.ac_accessory._display_rotation_speed(),
             should_notify=should_notify,
         )

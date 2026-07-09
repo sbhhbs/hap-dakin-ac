@@ -29,8 +29,8 @@ def test_rotation_speed_maps_to_five_daikin_speeds() -> None:
 
 
 def test_fan_to_rotation_speed() -> None:
-    assert fan_to_rotation_speed("auto") == 0
-    assert fan_to_rotation_speed("quiet") == 0
+    assert fan_to_rotation_speed("auto") == 64
+    assert fan_to_rotation_speed("quiet") == 17
     assert fan_to_rotation_speed("5") == 100
     assert fan_to_rotation_speed(1) == 20
     assert fan_to_rotation_speed(5) == 100
@@ -236,6 +236,32 @@ def test_fan_accessory_controls_shared_ac_state() -> None:
     assert len(controller.commands) == 1
 
 
+def test_auto_fan_displays_distinct_rotation_speed() -> None:
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    ac_accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=RecordingController(),
+        sensor_poll_interval=0,
+    )
+    fan_accessory = DaikinFanAccessory(
+        driver,
+        "Test AC Fan",
+        ac_accessory=ac_accessory,
+    )
+    ac_accessory.register_fan_accessory(fan_accessory)
+
+    assert ac_accessory.char_rotation_speed.value == 64
+    assert fan_accessory.char_rotation_speed.value == 64
+    assert ac_accessory.char_rotation_speed.properties["minStep"] == 20
+    assert fan_accessory.char_rotation_speed.properties["minStep"] == 20
+
+
 def test_mode_switches_are_mutually_exclusive_and_default_to_cool() -> None:
     controller = RecordingController()
     driver = AccessoryDriver(
@@ -358,8 +384,8 @@ def test_quiet_switch_updates_shared_command_state() -> None:
 
     quiet_switch.set_on(True)
     quiet_switch.handle_switch_write({"On": True})
-    assert ac_accessory.char_rotation_speed.value == 0
-    assert fan_accessory.char_rotation_speed.value == 0
+    assert ac_accessory.char_rotation_speed.value == 17
+    assert fan_accessory.char_rotation_speed.value == 17
 
     ac_accessory.set_active(0)
     ac_accessory.handle_hvac_write({"Active": 0})

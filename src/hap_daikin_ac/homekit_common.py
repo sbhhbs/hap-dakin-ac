@@ -22,6 +22,9 @@ CURRENT_FAN_STATE_BLOWING_AIR = 2
 TARGET_FAN_STATE_MANUAL = 0
 TARGET_FAN_STATE_AUTO = 1
 
+AUTO_ROTATION_SPEED = 64
+QUIET_ROTATION_SPEED = 17
+
 COMMAND_TRIGGER_CHARS = {
     "Active",
     "TargetFanState",
@@ -43,9 +46,24 @@ def rotation_speed_to_fan(value: float | int) -> int | str:
 def fan_to_rotation_speed(fan: int | str) -> int:
     if isinstance(fan, str):
         normalized = fan.strip().lower()
-        if normalized in {"auto", "quiet", "silent"}:
-            return 0
+        if normalized == "auto":
+            return AUTO_ROTATION_SPEED
+        if normalized in {"quiet", "silent"}:
+            return QUIET_ROTATION_SPEED
         if normalized.isdecimal():
             return max(1, min(5, int(normalized))) * 20
         return 20
     return max(1, min(5, int(fan))) * 20
+
+
+def set_rotation_speed_display(
+    characteristic: object,
+    value: int,
+    *,
+    should_notify: bool = True,
+) -> None:
+    """Publish display-only RotationSpeed values without minStep rounding."""
+    changed = characteristic.value != value
+    characteristic.value = value
+    if changed and should_notify and characteristic.broker:
+        characteristic.notify()
