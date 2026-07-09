@@ -1,0 +1,171 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.17.0}
+    container_name: ${ELASTICSEARCH_CONTAINER_NAME:-hap-daikin-elasticsearch}
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.license.self_generated.type: basic
+      ES_JAVA_OPTS: ${ELASTICSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - hap-daikin-elasticsearch:/usr/share/elasticsearch/data
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION:-8.17.0}
+    container_name: ${LOGSTASH_CONTAINER_NAME:-hap-daikin-logstash}
+    restart: unless-stopped
+    depends_on:
+      - elasticsearch
+    environment:
+      LS_JAVA_OPTS: ${LOGSTASH_JAVA_OPTS:--Xms256m -Xmx256m}
+    ports:
+      - "${LOGSTASH_HTTP_PORT:-8080}:8080"
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+    - |
+      cat > /usr/share/logstash/config/logstash.yml <<'YAML'
+      api.http.host: "0.0.0.0"
+      pipeline.ecs_compatibility: disabled
+      xpack.monitoring.enabled: false
+      YAML
+
+      mkdir -p /usr/share/logstash/pipeline /usr/share/logstash/templates
+
+      cat > /usr/share/logstash/pipeline/hap-daikin.conf <<'CONF'
+      input {
+        http {
+          port => 8080
+          codec => json {
+            ecs_compatibility => disabled
+          }
+          ecs_compatibility => disabled
+        }
+      }
+
+      filter {
+        if [timestamp] {
+          date {
+            match => ["timestamp", "ISO8601"]
+            target => "@timestamp"
+          }
+        }
+
+        mutate {
+          convert => {
+            "temperature_c" => "float"
+            "humidity_percent" => "float"
+            "homekit_port" => "integer"
+          }
+        }
+      }
+
+      output {
+        elasticsearch {
+          hosts => ["http://elasticsearch:9200"]
+          index => "hap-daikin-sensors-%{+YYYY.MM.dd}"
+          manage_template => true
+          template => "/usr/share/logstash/templates/hap-daikin-sensors.json"
+          template_name => "hap-daikin-sensors"
+          template_overwrite => true
+        }
+
+        stdout {
+          codec => json_lines {
+            ecs_compatibility => disabled
+          }
+        }
+      }
+      CONF
+
+      cat > /usr/share/logstash/templates/hap-daikin-sensors.json <<'JSON'
+      {
+        "index_patterns": ["hap-daikin-sensors-*"],
+        "template": {
+          "settings": {
+            "number_of_shards": 1,
+            "number_of_replicas": 0
+          },
+          "mappings": {
+            "dynamic": true,
+            "properties": {
+              "@timestamp": {"type": "date"},
+              "timestamp": {"type": "date"},
+              "service_name": {"type": "keyword"},
+              "container_hostname": {"type": "keyword"},
+              "event_type": {"type": "keyword"},
+              "accessory_name": {"type": "keyword"},
+              "temperature_c": {"type": "float"},
+              "humidity_percent": {"type": "float"},
+              "rm4_host": {"type": "keyword"},
+              "rm4_mac": {"type": "keyword"},
+              "rm4_model": {"type": "keyword"},
+              "rm4_configured_host": {"type": "keyword"},
+              "rm4_configured_mac": {"type": "keyword"},
+              "homekit_address": {"type": "keyword"},
+              "homekit_port": {"type": "integer"},
+              "raw": {"type": "object", "enabled": true}
+            }
+          }
+        }
+      }
+      JSON
+
+      exec /usr/share/logstash/bin/logstash -f /usr/share/logstash/pipeline/hap-daikin.conf
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-8.17.0}
+    container_name: ${KIBANA_CONTAINER_NAME:-hap-daikin-kibana}
+    restart: unless-stopped
+    depends_on:
+      - elasticsearch
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      XPACK_SECURITY_ENABLED: "false"
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+
+  kibana-setup:
+    image: curlimages/curl:${CURL_VERSION:-8.11.1}
+    container_name: ${KIBANA_SETUP_CONTAINER_NAME:-hap-daikin-kibana-setup}
+    depends_on:
+      - kibana
+    restart: "no"
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+    - |
+      KIBANA_URL="$${KIBANA_URL:-http://kibana:5601}"
+      DASHBOARD_FILE="/tmp/hap-daikin-dashboard.ndjson"
+
+      cat > "$${DASHBOARD_FILE}" <<'NDJSON'
+      {"id":"hap-daikin-sensor-trend","type":"visualization","attributes":{"title":"Daikin RM4 temperature and humidity","visState":"{\"title\":\"Daikin RM4 temperature and humidity\",\"type\":\"vega\",\"params\":{\"spec\":\"{\\n  \\\"$$schema\\\": \\\"https://vega.github.io/schema/vega-lite/v5.json\\\",\\n  \\\"title\\\": \\\"Daikin RM4 temperature and humidity\\\",\\n  \\\"data\\\": {\\n    \\\"url\\\": {\\n      \\\"%context%\\\": true,\\n      \\\"%timefield%\\\": \\\"@timestamp\\\",\\n      \\\"index\\\": \\\"hap-daikin-sensors-*\\\",\\n      \\\"body\\\": {\\n        \\\"size\\\": 10000,\\n        \\\"_source\\\": [\\\"@timestamp\\\", \\\"temperature_c\\\", \\\"humidity_percent\\\", \\\"accessory_name\\\", \\\"rm4_host\\\", \\\"rm4_mac\\\"],\\n        \\\"sort\\\": [{\\\"@timestamp\\\": \\\"asc\\\"}]\\n      }\\n    },\\n    \\\"format\\\": {\\\"property\\\": \\\"hits.hits\\\"}\\n  },\\n  \\\"transform\\\": [\\n    {\\\"calculate\\\": \\\"toDate(datum._source['@timestamp'])\\\", \\\"as\\\": \\\"time\\\"},\\n    {\\\"calculate\\\": \\\"datum._source.temperature_c\\\", \\\"as\\\": \\\"temperature_c\\\"},\\n    {\\\"calculate\\\": \\\"datum._source.humidity_percent\\\", \\\"as\\\": \\\"humidity_percent\\\"},\\n    {\\\"fold\\\": [\\\"temperature_c\\\", \\\"humidity_percent\\\"], \\\"as\\\": [\\\"metric\\\", \\\"value\\\"]},\\n    {\\\"filter\\\": \\\"datum.value != null\\\"},\\n    {\\\"calculate\\\": \\\"datum.metric == 'temperature_c' ? 'Temperature C' : 'Humidity %'\\\", \\\"as\\\": \\\"label\\\"}\\n  ],\\n  \\\"mark\\\": {\\\"type\\\": \\\"line\\\", \\\"point\\\": true},\\n  \\\"encoding\\\": {\\n    \\\"x\\\": {\\\"field\\\": \\\"time\\\", \\\"type\\\": \\\"temporal\\\", \\\"title\\\": \\\"Time\\\"},\\n    \\\"y\\\": {\\\"field\\\": \\\"value\\\", \\\"type\\\": \\\"quantitative\\\", \\\"title\\\": \\\"Value\\\"},\\n    \\\"color\\\": {\\\"field\\\": \\\"label\\\", \\\"type\\\": \\\"nominal\\\", \\\"title\\\": \\\"Metric\\\"},\\n    \\\"tooltip\\\": [\\n      {\\\"field\\\": \\\"time\\\", \\\"type\\\": \\\"temporal\\\", \\\"title\\\": \\\"Time\\\"},\\n      {\\\"field\\\": \\\"label\\\", \\\"type\\\": \\\"nominal\\\", \\\"title\\\": \\\"Metric\\\"},\\n      {\\\"field\\\": \\\"value\\\", \\\"type\\\": \\\"quantitative\\\", \\\"title\\\": \\\"Value\\\"}\\n    ]\\n  }\\n}\"}}","uiStateJSON":"{}","description":"Line chart backed by hap-daikin-sensors-* sensor events.","version":1,"kibanaSavedObjectMeta":{"searchSourceJSON":"{}"}},"references":[]}
+      {"id":"hap-daikin-sensor-dashboard","type":"dashboard","attributes":{"title":"Daikin RM4 Sensor Dashboard","description":"Temperature and humidity readings from hap-daikin-ac.","panelsJSON":"[{\"version\":\"8.17.0\",\"type\":\"visualization\",\"gridData\":{\"x\":0,\"y\":0,\"w\":48,\"h\":24,\"i\":\"1\"},\"panelIndex\":\"1\",\"embeddableConfig\":{},\"panelRefName\":\"panel_1\"}]","optionsJSON":"{\"useMargins\":true,\"syncColors\":false,\"syncCursor\":true,\"syncTooltips\":true,\"hidePanelTitles\":false}","timeRestore":false,"version":1,"kibanaSavedObjectMeta":{"searchSourceJSON":"{}"}},"references":[{"name":"panel_1","type":"visualization","id":"hap-daikin-sensor-trend"}]}
+      NDJSON
+
+      echo "waiting for Kibana at $${KIBANA_URL}"
+      until curl -fsS "$${KIBANA_URL}/api/status" >/dev/null; do
+        sleep 5
+      done
+
+      echo "creating Daikin sensor data view"
+      curl -fsS \
+        -X POST "$${KIBANA_URL}/api/data_views/data_view" \
+        -H "kbn-xsrf: hap-daikin-ac" \
+        -H "Content-Type: application/json" \
+        -d '{"data_view":{"id":"hap-daikin-sensors","title":"hap-daikin-sensors-*","name":"Daikin RM4 Sensors","timeFieldName":"@timestamp"}}' \
+        >/dev/null || true
+
+      echo "importing Daikin dashboard"
+      curl -fsS \
+        -X POST "$${KIBANA_URL}/api/saved_objects/_import?overwrite=true" \
+        -H "kbn-xsrf: hap-daikin-ac" \
+        -F "file=@$${DASHBOARD_FILE}" \
+        >/dev/null
+
+      echo "Kibana dashboard import complete"
+
+volumes:
+  hap-daikin-elasticsearch:

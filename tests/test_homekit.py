@@ -46,6 +46,12 @@ class FakeSensorController(BroadlinkDaikinController):
         return Rm4SensorReadings(temperature=26.4, humidity=61.2, raw={})
 
 
+class EmptySensorController(FakeSensorController):
+    def read_sensors(self, *, force: bool = False) -> Rm4SensorReadings:
+        self.read_count += 1
+        return Rm4SensorReadings(temperature=None, humidity=None, raw={})
+
+
 class RecordingController(BroadlinkDaikinController):
     def __init__(self) -> None:
         super().__init__(BroadlinkTarget(dry_run=True))
@@ -53,6 +59,21 @@ class RecordingController(BroadlinkDaikinController):
 
     def send(self, command: DaikinCommand) -> None:
         self.commands.append(command)
+
+
+class RecordingTelemetry:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Rm4SensorReadings, dict[str, object]]] = []
+
+    def send_sensor_reading(
+        self,
+        readings: Rm4SensorReadings,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.calls.append((readings, metadata or {}))
 
 
 def test_homekit_sensor_readings_update_characteristics() -> None:
@@ -74,6 +95,64 @@ def test_homekit_sensor_readings_update_characteristics() -> None:
 
     assert accessory.char_current_temp.value == 26
     assert accessory.char_current_humidity.value == 61
+
+
+def test_homekit_sensor_readings_publish_telemetry() -> None:
+    controller = FakeSensorController()
+    controller.device_metadata = lambda: {
+        "rm4_host": "192.168.1.50",
+        "rm4_mac": "a043b0b9f7f6",
+    }
+    telemetry = RecordingTelemetry()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=controller,
+        sensor_poll_interval=0,
+        telemetry_client=telemetry,
+        telemetry_context={"homekit_port": 51234},
+    )
+    driver.add_accessory(accessory)
+
+    accessory.refresh_sensor_readings(notify=False)
+
+    readings, metadata = telemetry.calls[0]
+    assert readings.temperature == 26.4
+    assert readings.humidity == 61.2
+    assert metadata == {
+        "accessory_name": "Test AC",
+        "homekit_port": 51234,
+        "rm4_host": "192.168.1.50",
+        "rm4_mac": "a043b0b9f7f6",
+    }
+
+
+def test_homekit_sensor_telemetry_skips_empty_readings() -> None:
+    telemetry = RecordingTelemetry()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+    )
+    accessory = DaikinAcAccessory(
+        driver,
+        "Test AC",
+        controller=EmptySensorController(),
+        sensor_poll_interval=0,
+        telemetry_client=telemetry,
+    )
+    driver.add_accessory(accessory)
+
+    accessory.refresh_sensor_readings(notify=False)
+
+    assert telemetry.calls == []
 
 
 def test_homekit_getters_return_cached_sensor_values_without_io() -> None:

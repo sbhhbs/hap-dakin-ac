@@ -254,6 +254,7 @@ def run_homekit(args: argparse.Namespace) -> int:
         DaikinModeSwitchAccessory,
         DaikinQuietSwitchAccessory,
     )
+    from .telemetry import LogstashTelemetryClient
 
     target = BroadlinkTarget(
         host=args.host,
@@ -268,6 +269,10 @@ def run_homekit(args: argparse.Namespace) -> int:
     )
     controller = BroadlinkDaikinController(target)
     controller.connect()
+    telemetry_client = LogstashTelemetryClient(
+        args.logstash_url,
+        timeout=args.logstash_timeout,
+    )
     driver = AccessoryDriver(
         address=args.address,
         port=args.port,
@@ -284,6 +289,11 @@ def run_homekit(args: argparse.Namespace) -> int:
         max_temp=args.max_temp,
         initial_fan=args.initial_fan,
         sensor_poll_interval=args.sensor_interval,
+        telemetry_client=telemetry_client,
+        telemetry_context={
+            "homekit_address": args.address,
+            "homekit_port": args.port,
+        },
     )
     fan_accessory = DaikinFanAccessory(
         driver,

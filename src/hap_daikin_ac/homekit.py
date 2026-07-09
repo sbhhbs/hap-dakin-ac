@@ -32,6 +32,8 @@ from .homekit_controls import (
     DaikinQuietSwitchAccessory,
 )
 from .protocol import DaikinCommand, MAX_TEMP_C, MIN_TEMP_C, Mode
+from .rm4 import Rm4SensorReadings
+from .telemetry import LogstashTelemetryClient
 
 LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +52,8 @@ class DaikinAcAccessory(Accessory):
         max_temp: int = MAX_TEMP_C,
         initial_fan: int | str = "auto",
         sensor_poll_interval: float = 60.0,
+        telemetry_client: LogstashTelemetryClient | None = None,
+        telemetry_context: dict[str, object] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -66,6 +70,8 @@ class DaikinAcAccessory(Accessory):
         self.swing_vertical = False
         self.quiet_mode = False
         self.sensor_poll_interval = sensor_poll_interval
+        self.telemetry_client = telemetry_client
+        self.telemetry_context = telemetry_context or {}
         self.fan_accessory: DaikinFanAccessory | None = None
         self.mode_switch_accessories: list[DaikinModeSwitchAccessory] = []
         self.quiet_switch_accessory: DaikinQuietSwitchAccessory | None = None
@@ -280,6 +286,7 @@ class DaikinAcAccessory(Accessory):
                 self.current_humidity,
                 should_notify=notify,
             )
+        self._publish_sensor_telemetry(readings)
 
     def _publish_state(self) -> None:
         self.char_active.set_value(
@@ -342,6 +349,19 @@ class DaikinAcAccessory(Accessory):
             mode_switch_accessory.update_from_ac()
         if self.quiet_switch_accessory is not None:
             self.quiet_switch_accessory.update_from_ac()
+
+    def _publish_sensor_telemetry(self, readings: Rm4SensorReadings) -> None:
+        if self.telemetry_client is None or not self.telemetry_client.enabled:
+            return
+        if readings.temperature is None and readings.humidity is None:
+            return
+
+        metadata = {
+            "accessory_name": self.display_name,
+            **self.telemetry_context,
+            **self.controller.device_metadata(),
+        }
+        self.telemetry_client.send_sensor_reading(readings, metadata=metadata)
 
 
 def validate_temperature_limits(min_temp: int, max_temp: int) -> None:

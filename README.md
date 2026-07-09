@@ -100,9 +100,12 @@ export HAP_DAIKIN_HOMEKIT_NAME="Daikin AC"
 export HAP_DAIKIN_MIN_TEMP=10
 export HAP_DAIKIN_MAX_TEMP=30
 export HAP_DAIKIN_SENSOR_INTERVAL=60
+export HAP_DAIKIN_LOGSTASH_URL=http://127.0.0.1:8080
 ```
 
 `HAP_DAIKIN_MIN_TEMP` and `HAP_DAIKIN_MAX_TEMP` control the setpoint range shown in HomeKit. They must stay inside the Daikin IR protocol range of `10..30` C.
+
+If `HAP_DAIKIN_LOGSTASH_URL` is set, each successful RM4 sensor reading is POSTed as JSON to that Logstash HTTP endpoint. Events include `timestamp`, `temperature_c`, `humidity_percent`, `accessory_name`, RM4 host/MAC/model fields, HomeKit address/port fields, and the container hostname. `HAP_DAIKIN_LOGSTASH_TIMEOUT` controls the POST timeout and defaults to `3` seconds.
 
 For one-shot CLI commands, if `HAP_DAIKIN_RM4_HOST` is unset and `HAP_DAIKIN_RM4_MAC_ADDRESS` or `HAP_DAIKIN_RM4_MAC` is set, the command discovers the RM4 by MAC address and uses the discovered IP. This is the preferred setup for DHCP networks.
 
@@ -139,6 +142,24 @@ Or use Docker Compose. The included [docker-compose.yml](docker-compose.yml) sav
 ```bash
 docker compose up -d
 docker compose logs -f
+```
+
+## Run The ELK Dashboard
+
+The included [docker-compose.elk.yml](docker-compose.elk.yml) runs Elasticsearch, Logstash, Kibana, and a one-shot Kibana setup container. Logstash listens for telemetry on HTTP port `8080`, stores events in `hap-daikin-sensors-*`, and imports a Kibana dashboard for temperature and humidity changes.
+
+```bash
+docker compose -f docker-compose.elk.yml up -d
+export HAP_DAIKIN_LOGSTASH_URL=http://127.0.0.1:8080
+docker compose up -d
+```
+
+Open Kibana at [http://localhost:5601](http://localhost:5601), then open the `Daikin RM4 Sensor Dashboard` dashboard. If the HomeKit container is not using host networking and is attached to the ELK Docker network, use `http://logstash:8080` for `HAP_DAIKIN_LOGSTASH_URL` instead.
+
+If you want a single ELK compose file with no external bind-mounted config files, use [docker-compose.elk.standalone.yml](docker-compose.elk.standalone.yml):
+
+```bash
+docker compose -f docker-compose.elk.standalone.yml up -d
 ```
 
 ## Notes

@@ -13,6 +13,8 @@ from .cli_env import (
     HOMEKIT_PINCODE_ENV,
     HOMEKIT_PERSIST_FILE_ENV,
     HOMEKIT_PORT_ENV,
+    LOGSTASH_TIMEOUT_ENV,
+    LOGSTASH_URL_ENV,
     LOG_LEVEL_ENV,
     RM4_DISCOVER_IP_ENV,
     RM4_HOST_ENV,
@@ -227,4 +229,18 @@ def add_homekit_options(parser: argparse.ArgumentParser) -> None:
             "seconds between RM4 sensor refreshes in HomeKit; "
             "env HAP_DAIKIN_SENSOR_INTERVAL; use 0 to disable polling"
         ),
+    )
+    parser.add_argument(
+        "--logstash-url",
+        default=env_value(LOGSTASH_URL_ENV),
+        help=(
+            "optional Logstash HTTP input URL for RM4 sensor telemetry; "
+            f"env {LOGSTASH_URL_ENV}"
+        ),
+    )
+    parser.add_argument(
+        "--logstash-timeout",
+        type=float,
+        default=env_float(LOGSTASH_TIMEOUT_ENV, 3),
+        help=f"Logstash telemetry POST timeout seconds; env {LOGSTASH_TIMEOUT_ENV}",
     )

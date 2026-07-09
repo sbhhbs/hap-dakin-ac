@@ -13,6 +13,7 @@ from .protocol import DaikinCommand, state_to_pulses
 from .rm4 import (
     Rm4SensorReadings,
     authenticate_device,
+    device_mac_hex,
     device_summary,
     read_device_sensors,
     select_device,
@@ -108,3 +109,35 @@ class BroadlinkDaikinController:
         self._sensor_cache = readings
         self._sensor_cache_at = now
         return readings
+
+    def device_metadata(self) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "rm4_configured_host": self.target.host,
+            "rm4_configured_mac": self.target.mac,
+        }
+        if self._device is None:
+            return _without_empty_values(metadata)
+
+        host = getattr(self._device, "host", None)
+        if isinstance(host, tuple):
+            host = host[0]
+        elif host is not None:
+            host = str(host)
+        metadata.update(
+            {
+                "rm4_host": host,
+                "rm4_mac": device_mac_hex(self._device),
+                "rm4_model": str(
+                    getattr(self._device, "model", self._device.__class__.__name__)
+                ),
+            }
+        )
+        return _without_empty_values(metadata)
+
+
+def _without_empty_values(values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in values.items()
+        if value is not None and value != ""
+    }

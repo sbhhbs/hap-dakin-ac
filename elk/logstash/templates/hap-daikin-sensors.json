@@ -1,0 +1,30 @@
+{
+  "index_patterns": ["hap-daikin-sensors-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0
+    },
+    "mappings": {
+      "dynamic": true,
+      "properties": {
+        "@timestamp": {"type": "date"},
+        "timestamp": {"type": "date"},
+        "service_name": {"type": "keyword"},
+        "container_hostname": {"type": "keyword"},
+        "event_type": {"type": "keyword"},
+        "accessory_name": {"type": "keyword"},
+        "temperature_c": {"type": "float"},
+        "humidity_percent": {"type": "float"},
+        "rm4_host": {"type": "keyword"},
+        "rm4_mac": {"type": "keyword"},
+        "rm4_model": {"type": "keyword"},
+        "rm4_configured_host": {"type": "keyword"},
+        "rm4_configured_mac": {"type": "keyword"},
+        "homekit_address": {"type": "keyword"},
+        "homekit_port": {"type": "integer"},
+        "raw": {"type": "object", "enabled": true}
+      }
+    }
+  }
+}

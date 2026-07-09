@@ -30,6 +30,8 @@ def test_empty_env_values_fall_back_to_defaults(monkeypatch) -> None:
     monkeypatch.setenv("HAP_DAIKIN_SENSOR_INTERVAL", "")
     monkeypatch.setenv("HAP_DAIKIN_MIN_TEMP", "")
     monkeypatch.setenv("HAP_DAIKIN_MAX_TEMP", "")
+    monkeypatch.setenv("HAP_DAIKIN_LOGSTASH_URL", "")
+    monkeypatch.setenv("HAP_DAIKIN_LOGSTASH_TIMEOUT", "")
 
     args = build_parser().parse_args(["homekit"])
 
@@ -42,6 +44,8 @@ def test_empty_env_values_fall_back_to_defaults(monkeypatch) -> None:
     assert args.sensor_interval == 60
     assert args.min_temp == 10
     assert args.max_temp == 30
+    assert args.logstash_url is None
+    assert args.logstash_timeout == 3
 
 
 def test_broadlink_target_env_defaults(monkeypatch) -> None:
@@ -68,3 +72,13 @@ def test_homekit_temperature_range_env_defaults(monkeypatch) -> None:
 
     assert args.min_temp == 18
     assert args.max_temp == 28
+
+
+def test_homekit_logstash_env_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("HAP_DAIKIN_LOGSTASH_URL", "logstash:8080")
+    monkeypatch.setenv("HAP_DAIKIN_LOGSTASH_TIMEOUT", "1.5")
+
+    args = build_parser().parse_args(["homekit"])
+
+    assert args.logstash_url == "logstash:8080"
+    assert args.logstash_timeout == 1.5

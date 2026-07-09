@@ -1,0 +1,56 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.17.0}
+    container_name: ${ELASTICSEARCH_CONTAINER_NAME:-hap-daikin-elasticsearch}
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.license.self_generated.type: basic
+      ES_JAVA_OPTS: ${ELASTICSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - hap-daikin-elasticsearch:/usr/share/elasticsearch/data
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION:-8.17.0}
+    container_name: ${LOGSTASH_CONTAINER_NAME:-hap-daikin-logstash}
+    restart: unless-stopped
+    depends_on:
+      - elasticsearch
+    environment:
+      LS_JAVA_OPTS: ${LOGSTASH_JAVA_OPTS:--Xms256m -Xmx256m}
+    ports:
+      - "${LOGSTASH_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./elk/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./elk/logstash/templates:/usr/share/logstash/templates:ro
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-8.17.0}
+    container_name: ${KIBANA_CONTAINER_NAME:-hap-daikin-kibana}
+    restart: unless-stopped
+    depends_on:
+      - elasticsearch
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      XPACK_SECURITY_ENABLED: "false"
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+
+  kibana-setup:
+    image: curlimages/curl:${CURL_VERSION:-8.11.1}
+    container_name: ${KIBANA_SETUP_CONTAINER_NAME:-hap-daikin-kibana-setup}
+    depends_on:
+      - kibana
+    restart: "no"
+    entrypoint: ["/bin/sh", "/setup/setup.sh"]
+    volumes:
+      - ./elk/kibana/dashboards:/dashboards:ro
+      - ./elk/kibana/setup:/setup:ro
+
+volumes:
+  hap-daikin-elasticsearch:
