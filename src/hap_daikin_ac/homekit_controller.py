@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from threading import Lock
+from threading import Lock, Thread
 import time
 from typing import Any
 
 from .broadlink_codec import format_hex, pulses_to_broadlink_packet
 from .protocol import DaikinCommand, state_to_pulses
 from .rm4 import (
+    Rm4ConnectivityError,
     Rm4SensorReadings,
     authenticate_device,
     device_mac_hex,
@@ -43,6 +44,8 @@ class BroadlinkDaikinController:
         self.target = target
         self._device: Any | None = None
         self._device_lock = Lock()
+        self._rediscovery_lock = Lock()
+        self._rediscovery_thread: Thread | None = None
         self._sensor_cache: Rm4SensorReadings | None = None
         self._sensor_cache_at = 0.0
 
@@ -73,8 +76,8 @@ class BroadlinkDaikinController:
             LOGGER.info("dry-run Broadlink packet: %s", format_hex(packet))
             return
 
-        device = self._require_device()
         with self._device_lock:
+            device = self._require_device()
             send_ir_packet_to_device(
                 device,
                 packet,
@@ -95,30 +98,138 @@ class BroadlinkDaikinController:
             LOGGER.info("dry-run sensor read skipped")
             return None
 
-        now = time.monotonic()
-        if (
-            not force
-            and self._sensor_cache is not None
-            and now - self._sensor_cache_at < self.target.sensor_cache_ttl
-        ):
-            return self._sensor_cache
+        device: Any | None = None
+        try:
+            with self._device_lock:
+                now = time.monotonic()
+                if (
+                    not force
+                    and self._sensor_cache is not None
+                    and now - self._sensor_cache_at < self.target.sensor_cache_ttl
+                ):
+                    return self._sensor_cache
 
-        device = self._require_device()
-        with self._device_lock:
-            readings = read_device_sensors(device)
-        self._sensor_cache = readings
-        self._sensor_cache_at = now
+                device = self._require_device()
+                readings = read_device_sensors(device)
+                self._sensor_cache = readings
+                self._sensor_cache_at = time.monotonic()
+        except Rm4ConnectivityError as exc:
+            if device is not None:
+                self._schedule_rediscovery(device, exc)
+            raise
         return readings
+
+    def _schedule_rediscovery(
+        self,
+        failed_device: Any,
+        error: Rm4ConnectivityError,
+    ) -> None:
+        if not self.target.mac or self.target.host:
+            LOGGER.debug(
+                "automatic RM4 rediscovery skipped because the target is not "
+                "configured by MAC alone"
+            )
+            return
+
+        with self._rediscovery_lock:
+            if (
+                self._rediscovery_thread is not None
+                and self._rediscovery_thread.is_alive()
+            ):
+                LOGGER.debug(
+                    "RM4 rediscovery is already running after sensor failure: %s",
+                    error,
+                )
+                return
+            if self._device is not failed_device:
+                LOGGER.debug(
+                    "RM4 rediscovery is no longer needed because the binding "
+                    "already changed"
+                )
+                return
+
+            LOGGER.warning(
+                "lost sensor connectivity to %s; scheduling background "
+                "rediscovery by MAC %s: %s",
+                device_summary(failed_device),
+                self.target.mac,
+                error,
+            )
+            thread = Thread(
+                target=self._rediscover_device,
+                args=(failed_device,),
+                name="rm4-ip-rediscovery",
+                daemon=True,
+            )
+            self._rediscovery_thread = thread
+            try:
+                thread.start()
+            except RuntimeError as exc:
+                self._rediscovery_thread = None
+                LOGGER.warning("unable to start RM4 rediscovery worker: %s", exc)
+
+    def _rediscover_device(self, failed_device: Any) -> None:
+        mac = self.target.mac
+        if mac is None:
+            return
+
+        LOGGER.info(
+            "searching for RM4 MAC %s after sensor connectivity failure at %s",
+            mac,
+            device_summary(failed_device),
+        )
+        try:
+            replacement = select_device(
+                host=None,
+                mac=mac,
+                timeout=self.target.timeout,
+                local_ip_address=self.target.local_ip_address,
+                discover_ip_address=self.target.discover_ip_address,
+            )
+            authenticate_device(replacement)
+        except (OSError, RuntimeError) as exc:
+            LOGGER.warning(
+                "background RM4 rediscovery failed for MAC %s; the next sensor "
+                "connectivity failure will retry: %s",
+                mac,
+                exc,
+            )
+            return
+        except Exception:
+            LOGGER.exception(
+                "unexpected error during background RM4 rediscovery for MAC %s",
+                mac,
+            )
+            return
+
+        with self._device_lock:
+            if self._device is not failed_device:
+                LOGGER.info(
+                    "discarding rediscovered %s because the RM4 binding "
+                    "already changed",
+                    device_summary(replacement),
+                )
+                return
+            self._device = replacement
+            self._sensor_cache = None
+            self._sensor_cache_at = 0.0
+
+        LOGGER.info(
+            "rebound RM4 controller after sensor connectivity failure: %s -> %s",
+            device_summary(failed_device),
+            device_summary(replacement),
+        )
 
     def device_metadata(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {
             "rm4_configured_host": self.target.host,
             "rm4_configured_mac": self.target.mac,
         }
-        if self._device is None:
+        device = self._device
+        if device is None:
             return _without_empty_values(metadata)
 
-        host = getattr(self._device, "host", None)
+        host = getattr(device, "host", None)
         if isinstance(host, tuple):
             host = host[0]
         elif host is not None:
@@ -126,9 +237,9 @@ class BroadlinkDaikinController:
         metadata.update(
             {
                 "rm4_host": host,
-                "rm4_mac": device_mac_hex(self._device),
+                "rm4_mac": device_mac_hex(device),
                 "rm4_model": str(
-                    getattr(self._device, "model", self._device.__class__.__name__)
+                    getattr(device, "model", device.__class__.__name__)
                 ),
             }
         )

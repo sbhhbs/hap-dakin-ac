@@ -10,6 +10,10 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 
+class Rm4ConnectivityError(RuntimeError):
+    """The currently bound RM4 could not be reached or lost its session."""
+
+
 @dataclass(frozen=True)
 class Rm4SensorReadings:
     temperature: float | None = None
@@ -164,7 +168,14 @@ def send_ir_packet_to_device(
 
 
 def read_device_sensors(device: Any) -> Rm4SensorReadings:
-    from broadlink.exceptions import BroadlinkException
+    from broadlink.exceptions import (
+        AuthenticationError,
+        AuthorizationError,
+        BroadlinkException,
+        ConnectionClosedError,
+        DeviceOfflineError,
+        NetworkTimeoutError,
+    )
 
     if not hasattr(device, "check_sensors"):
         raise RuntimeError(f"{device_summary(device)} does not expose RM4 sensors")
@@ -172,6 +183,15 @@ def read_device_sensors(device: Any) -> Rm4SensorReadings:
     try:
         LOGGER.debug("reading RM4 sensors from %s", device_summary(device))
         raw = device.check_sensors()
+    except (
+        AuthenticationError,
+        AuthorizationError,
+        ConnectionClosedError,
+        DeviceOfflineError,
+        NetworkTimeoutError,
+        OSError,
+    ) as exc:
+        raise Rm4ConnectivityError(f"Broadlink sensor read failed: {exc}") from exc
     except BroadlinkException as exc:
         raise RuntimeError(f"Broadlink sensor read failed: {exc}") from exc
 
