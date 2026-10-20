@@ -115,7 +115,7 @@ class DaikinFanAccessory(Accessory):
             return
         if not self.ac_accessory.active and "Active" not in chars:
             return
-        self.ac_accessory._schedule_current_command()
+        self.ac_accessory._schedule_current_command(changed_chars=chars)
 
     def update_from_ac(self, *, should_notify: bool = True) -> None:
         active = ACTIVE_ACTIVE if self.ac_accessory.active else ACTIVE_INACTIVE

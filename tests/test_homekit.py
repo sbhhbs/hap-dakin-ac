@@ -1,6 +1,9 @@
+import asyncio
+
 import pytest
 
 from pyhap.accessory_driver import AccessoryDriver
+from pyhap.util import is_callback
 
 from hap_daikin_ac.homekit import (
     BroadlinkDaikinController,
@@ -59,6 +62,42 @@ class RecordingController(BroadlinkDaikinController):
 
     def send(self, command: DaikinCommand) -> None:
         self.commands.append(command)
+
+
+@pytest.fixture
+def debounce_controls(monkeypatch):
+    """Use real asyncio timers with a virtual clock and synchronous IR recorder."""
+    loop = asyncio.new_event_loop()
+    now = 0.0
+    monkeypatch.setattr(loop, "time", lambda: now)
+    controller = RecordingController()
+    driver = AccessoryDriver(
+        address="127.0.0.1",
+        port=0,
+        persist_file="/tmp/hap-daikin-test.state",
+        pincode=b"031-45-154",
+        loop=loop,
+    )
+    driver.add_job = lambda target, *args: target(*args)
+    ac = DaikinAcAccessory(
+        driver, "Test AC", controller=controller, sensor_poll_interval=0
+    )
+    fan = DaikinFanAccessory(driver, "Test Fan", ac_accessory=ac)
+    ac.register_fan_accessory(fan)
+    ac.set_active(1)
+    ac.handle_hvac_write({"Active": 1})
+    controller.commands.clear()
+
+    def advance(seconds):
+        nonlocal now
+        now += seconds
+        loop.run_until_complete(asyncio.sleep(0))
+
+    try:
+        yield controller, ac, fan, advance
+    finally:
+        loop.run_until_complete(ac.stop())
+        loop.close()
 
 
 class RecordingTelemetry:
@@ -477,26 +516,9 @@ def test_quiet_switch_updates_shared_command_state() -> None:
     assert quiet_switch.char_on.value is False
 
 
-def test_manual_fan_speed_clears_quiet_mode() -> None:
-    controller = RecordingController()
-    driver = AccessoryDriver(
-        address="127.0.0.1",
-        port=0,
-        persist_file="/tmp/hap-daikin-test.state",
-        pincode=b"031-45-154",
-    )
-    driver.add_job = lambda target, *args: target(*args)
-    ac_accessory = DaikinAcAccessory(
-        driver,
-        "Test AC",
-        controller=controller,
-        sensor_poll_interval=0,
-    )
-    fan_accessory = DaikinFanAccessory(
-        driver,
-        "Test AC Fan",
-        ac_accessory=ac_accessory,
-    )
+def test_manual_fan_speed_clears_quiet_mode(debounce_controls) -> None:
+    controller, ac_accessory, fan_accessory, advance = debounce_controls
+    driver = ac_accessory.driver
     quiet_switch = DaikinQuietSwitchAccessory(
         driver,
         "Test AC Quiet Mode",
@@ -516,8 +538,210 @@ def test_manual_fan_speed_clears_quiet_mode() -> None:
     assert ac_accessory.char_rotation_speed.value == 80
     assert fan_accessory.char_rotation_speed.value == 80
     assert quiet_switch.char_on.value is False
+    assert controller.commands[-1].quiet_mode is True
+    advance(0.3)
     assert controller.commands[-1].fan == 4
     assert controller.commands[-1].quiet_mode is False
+
+
+@pytest.mark.parametrize("surface", ["ac", "fan", "mixed"])
+@pytest.mark.parametrize("include_active", [False, True])
+def test_fan_drag_sends_final_speed_after_pause(
+    debounce_controls, surface, include_active
+) -> None:
+    controller, ac, fan, advance = debounce_controls
+    for index, speed in enumerate([20, 40, 60, 80, 100]):
+        if index:
+            advance(0.05)
+        control = ac if surface == "ac" or (surface == "mixed" and index % 2) else fan
+        control.set_rotation_speed(speed)
+        chars = {"RotationSpeed": speed}
+        if include_active:
+            control.set_active(1)
+            chars["Active"] = 1
+        if control is ac:
+            ac.handle_hvac_write(chars)
+        else:
+            fan.handle_fan_write(chars)
+
+    assert ac.char_rotation_speed.value == 100
+    assert fan.char_rotation_speed.value == 100
+    advance(0.299)
+    assert controller.commands == []
+    advance(0.002)
+    assert len(controller.commands) == 1
+    assert controller.commands[0].fan == 5
+
+
+@pytest.mark.parametrize("include_active", [False, True])
+def test_temperature_drag_sends_final_temperature_after_pause(
+    debounce_controls, include_active
+) -> None:
+    controller, ac, _, advance = debounce_controls
+    for temp in [23, 24, 25, 26, 27]:
+        advance(0.05)
+        ac.set_cooling_temperature(temp)
+        chars = {"CoolingThresholdTemperature": temp}
+        if include_active:
+            ac.set_active(1)
+            chars["Active"] = 1
+        ac.handle_hvac_write(chars)
+
+    assert ac.char_cooling_temp.value == 27
+    advance(0.299)
+    assert controller.commands == []
+    advance(0.002)
+    assert len(controller.commands) == 1
+    assert controller.commands[0].temp_c == 27
+
+
+def test_fan_and_temperature_share_one_pending_command(debounce_controls) -> None:
+    controller, ac, fan, advance = debounce_controls
+    ac.set_rotation_speed(20)
+    ac.handle_hvac_write({"RotationSpeed": 20})
+    advance(0.1)
+    ac.set_cooling_temperature(26)
+    ac.handle_hvac_write({"CoolingThresholdTemperature": 26})
+    advance(0.1)
+    fan.set_rotation_speed(80)
+    fan.handle_fan_write({"RotationSpeed": 80})
+
+    advance(0.299)
+    assert controller.commands == []
+    advance(0.002)
+    assert len(controller.commands) == 1
+    assert controller.commands[0].fan == 4
+    assert controller.commands[0].temp_c == 26
+
+
+def test_separate_adjustments_each_send_after_their_pause(debounce_controls) -> None:
+    controller, ac, fan, advance = debounce_controls
+    fan.set_rotation_speed(20)
+    fan.handle_fan_write({"RotationSpeed": 20})
+    advance(0.3)
+    ac.set_cooling_temperature(28)
+    ac.handle_hvac_write({"CoolingThresholdTemperature": 28})
+    advance(0.3)
+
+    assert [(cmd.fan, cmd.temp_c) for cmd in controller.commands] == [(1, 24), (1, 28)]
+
+
+@pytest.mark.parametrize("surface", ["ac", "fan"])
+def test_power_off_immediately_cancels_pending_adjustments(
+    debounce_controls, surface
+) -> None:
+    controller, ac, fan, advance = debounce_controls
+    ac.set_cooling_temperature(27)
+    ac.handle_hvac_write({"CoolingThresholdTemperature": 27})
+    fan.set_rotation_speed(80)
+    fan.handle_fan_write({"RotationSpeed": 80})
+    control = ac if surface == "ac" else fan
+    control.set_active(0)
+    if control is ac:
+        ac.handle_hvac_write({"Active": 0})
+    else:
+        fan.handle_fan_write({"Active": 0})
+
+    assert len(controller.commands) == 1
+    assert controller.commands[0].power is False
+    advance(1)
+    assert len(controller.commands) == 1
+
+
+def test_power_on_with_adjustments_is_immediate(debounce_controls) -> None:
+    controller, ac, _, advance = debounce_controls
+    ac.set_active(0)
+    ac.handle_hvac_write({"Active": 0})
+    controller.commands.clear()
+    ac.set_active(1)
+    ac.set_cooling_temperature(26)
+    ac.set_rotation_speed(80)
+    ac.handle_hvac_write({
+        "Active": 1, "CoolingThresholdTemperature": 26, "RotationSpeed": 80
+    })
+
+    assert len(controller.commands) == 1
+    assert controller.commands[0].power is True
+    assert controller.commands[0].temp_c == 26
+    assert controller.commands[0].fan == 4
+    advance(1)
+    assert len(controller.commands) == 1
+
+
+@pytest.mark.parametrize("kind", ["mode", "quiet", "swing"])
+def test_discrete_controls_send_latest_state_without_delay(
+    debounce_controls, kind
+) -> None:
+    controller, ac, _, advance = debounce_controls
+    ac.set_cooling_temperature(27)
+    ac.handle_hvac_write({"CoolingThresholdTemperature": 27})
+    if kind == "mode":
+        control = DaikinModeSwitchAccessory(
+            ac.driver, "Dry", ac_accessory=ac, mode=Mode.DRY
+        )
+        control.set_on(True)
+        control.handle_switch_write({"On": True})
+    elif kind == "quiet":
+        control = DaikinQuietSwitchAccessory(ac.driver, "Quiet", ac_accessory=ac)
+        control.set_on(True)
+        control.handle_switch_write({"On": True})
+    else:
+        ac.set_swing(1)
+        ac.handle_hvac_write({"SwingMode": 1})
+
+    assert len(controller.commands) == 1
+    command = controller.commands[0]
+    assert command.temp_c == 27
+    assert (command.mode == Mode.DRY) is (kind == "mode")
+    assert command.quiet_mode is (kind == "quiet")
+    assert command.swing_vertical is (kind == "swing")
+    advance(1)
+    assert len(controller.commands) == 1
+
+
+def test_auto_fan_adjustment_preserves_power(debounce_controls) -> None:
+    controller, _, fan, advance = debounce_controls
+    fan.set_rotation_speed(0)
+    fan.handle_fan_write({"RotationSpeed": 0})
+    advance(0.3)
+    assert len(controller.commands) == 1
+    assert controller.commands[0].fan == "auto"
+    assert controller.commands[0].power is True
+
+
+def test_superseded_executor_job_cannot_turn_ac_back_on(
+    debounce_controls, monkeypatch
+) -> None:
+    controller, ac, fan, advance = debounce_controls
+    jobs = []
+
+    def add_job(target, *args):
+        if is_callback(target):
+            target(*args)
+        else:
+            jobs.append(lambda: target(*args))
+
+    monkeypatch.setattr(ac.driver, "add_job", add_job)
+    fan.set_rotation_speed(80)
+    fan.handle_fan_write({"RotationSpeed": 80})
+    advance(0.3)
+    ac.set_active(0)
+    ac.handle_hvac_write({"Active": 0})
+    assert len(jobs) == 2
+    for job in reversed(jobs):
+        job()
+
+    assert len(controller.commands) == 1
+    assert controller.commands[0].power is False
+
+
+def test_shutdown_cancels_pending_adjustments(debounce_controls) -> None:
+    controller, ac, _, advance = debounce_controls
+    ac.set_cooling_temperature(27)
+    ac.handle_hvac_write({"CoolingThresholdTemperature": 27})
+    ac.driver.loop.run_until_complete(ac.stop())
+    advance(1)
+    assert controller.commands == []
 
 
 def test_controller_discovers_once_and_reuses_bound_device(monkeypatch) -> None:

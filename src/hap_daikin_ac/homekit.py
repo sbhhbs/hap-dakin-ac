@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from threading import Lock
 
 from pyhap.accessory import Accessory
 from pyhap.const import CATEGORY_AIR_CONDITIONER
+from pyhap.util import callback
 
 from .homekit_common import (
     ACTIVE_ACTIVE,
@@ -36,6 +38,7 @@ from .rm4 import Rm4SensorReadings
 from .telemetry import LogstashTelemetryClient
 
 LOGGER = logging.getLogger(__name__)
+CONTROL_DEBOUNCE_SECONDS = 0.3
 
 
 class DaikinAcAccessory(Accessory):
@@ -75,6 +78,11 @@ class DaikinAcAccessory(Accessory):
         self.fan_accessory: DaikinFanAccessory | None = None
         self.mode_switch_accessories: list[DaikinModeSwitchAccessory] = []
         self.quiet_switch_accessory: DaikinQuietSwitchAccessory | None = None
+        self._pending_command: asyncio.TimerHandle | None = None
+        self._command_generation = 0
+        self._requested_power = False
+        self._send_lock = Lock()
+        self._stopped = False
 
         self.set_info_service(
             manufacturer="Daikin",
@@ -197,6 +205,11 @@ class DaikinAcAccessory(Accessory):
             except TimeoutError:
                 pass
 
+    async def stop(self) -> None:
+        self._stopped = True
+        self._command_generation += 1
+        self._cancel_pending_command()
+
     def set_active(self, value: int) -> None:
         self.active = value == ACTIVE_ACTIVE
         if not self.active:
@@ -266,7 +279,7 @@ class DaikinAcAccessory(Accessory):
             return
         if not self.active and "Active" not in chars:
             return
-        self._schedule_current_command()
+        self._schedule_current_command(changed_chars=chars)
 
     def refresh_sensor_readings(self, notify: bool = True) -> None:
         try:
@@ -312,7 +325,9 @@ class DaikinAcAccessory(Accessory):
             return CURRENT_STATE_COOLING
         return CURRENT_STATE_IDLE
 
-    def _schedule_current_command(self) -> None:
+    def _schedule_current_command(
+        self, *, changed_chars: dict[str, object] | None = None
+    ) -> None:
         command = DaikinCommand(
             power=self.active,
             mode=self.mode,
@@ -321,7 +336,45 @@ class DaikinAcAccessory(Accessory):
             swing_vertical=self.swing_vertical,
             quiet_mode=self.quiet_mode,
         )
-        self.driver.add_job(self._send_command, command)
+        adjustment_chars = {"RotationSpeed", "CoolingThresholdTemperature"}
+        debounce = bool(
+            changed_chars
+            and adjustment_chars.intersection(changed_chars)
+            and COMMAND_TRIGGER_CHARS.intersection(changed_chars)
+            <= adjustment_chars | {"TargetFanState", "Active"}
+        )
+        # HAP callbacks can originate outside the loop. Keep timer operations
+        # on the driver's loop rather than scheduling a thread per slider tick.
+        self.driver.add_job(self._queue_command, command, debounce)
+
+    @callback
+    def _queue_command(self, command: DaikinCommand, debounce: bool) -> None:
+        self._cancel_pending_command()
+        self._command_generation += 1
+        if self._stopped or self.driver.stop_event.is_set():
+            return
+        power_changed = command.power != self._requested_power
+        self._requested_power = command.power
+        generation = self._command_generation
+        if debounce and command.power and not power_changed:
+            self._pending_command = self.driver.loop.call_later(
+                CONTROL_DEBOUNCE_SECONDS,
+                self._dispatch_command,
+                command,
+                generation,
+            )
+        else:
+            self._dispatch_command(command, generation)
+
+    def _cancel_pending_command(self) -> None:
+        if self._pending_command is not None:
+            self._pending_command.cancel()
+            self._pending_command = None
+
+    @callback
+    def _dispatch_command(self, command: DaikinCommand, generation: int) -> None:
+        self._pending_command = None
+        self.driver.add_job(self._send_command, command, generation)
 
     def _display_rotation_speed(self) -> int:
         if self.quiet_mode:
@@ -336,11 +389,20 @@ class DaikinAcAccessory(Accessory):
     def _clamp_temp(self, value: float | int) -> int:
         return int(max(self.min_temp, min(self.max_temp, round(value))))
 
-    def _send_command(self, command: DaikinCommand) -> None:
-        try:
-            self.controller.send(command)
-        except RuntimeError as exc:
-            LOGGER.warning("unable to send Daikin command: %s", exc)
+    def _send_command(self, command: DaikinCommand, generation: int) -> None:
+        # Executor jobs can start out of order. Drop superseded work under a
+        # send lock so an old power-on cannot follow a newer power-off.
+        with self._send_lock:
+            if (
+                self._stopped
+                or self.driver.stop_event.is_set()
+                or generation != self._command_generation
+            ):
+                return
+            try:
+                self.controller.send(command)
+            except RuntimeError as exc:
+                LOGGER.warning("unable to send Daikin command: %s", exc)
 
     def _sync_linked_accessories(self) -> None:
         if self.fan_accessory is not None:

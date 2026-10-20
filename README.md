@@ -77,6 +77,12 @@ The HomeKit server publishes a bridge with a cooling-only AC accessory, a separa
 
 Dry Mode and Fan Mode are mutually exclusive. If both switches are off, the AC uses Cool mode. Turning the Fan accessory off also turns the AC off and clears the mode switches. Auto fan displays as `64`, Quiet Mode displays as `17`, and changing the fan speed manually turns Quiet Mode off.
 
+Fan speed and target temperature adjustments share a 300 ms debounce. HomeKit
+shows each change immediately, while IR sends the latest combined settings after
+adjustments pause. This applies to both fan-speed controls. Power changes, mode
+switches, Quiet Mode, and swing changes send immediately and cancel any pending
+adjustment. Shutdown also cancels pending commands.
+
 ```bash
 export HAP_DAIKIN_RM4_MAC_ADDRESS=a0:43:b0:72:bb:64
 poetry run hap-daikin-ac homekit
