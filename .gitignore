@@ -31,6 +31,8 @@ htmlcov/
 .env
 .env.*
 .hap-daikin-ac.state
+.hap-rf-fan.state
+*.rf-codes.json
 
 # macOS
 .DS_Store

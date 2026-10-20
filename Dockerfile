@@ -35,7 +35,7 @@ COPY --from=builder /app/src /app/src
 
 WORKDIR /data
 VOLUME ["/data"]
-EXPOSE 51234
+EXPOSE 51234 51235
 
 USER appuser
 

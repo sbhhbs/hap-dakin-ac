@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 hap-daikin-ac = "hap_daikin_ac.cli:main"
+hap-rf-fan = "hap_daikin_ac.rf_cli:main"
 
 [dependency-groups]
 dev = [

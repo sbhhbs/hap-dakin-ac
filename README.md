@@ -125,7 +125,68 @@ For testing without sending IR:
 poetry run hap-daikin-ac homekit --dry-run
 ```
 
-## Run With Docker
+## RF Fan And Light
+
+The separate `hap-rf-fan` entry point controls a learned RF fan with **Off / Low /
+Mid / High** speeds and a **Light Toggle** switch. Each activation of Light
+Toggle sends one toggle request, then resets the switch. Its displayed off state
+means the button is ready; it does not report whether the physical light is on.
+The fan shows the last requested setting; changes made with the original remote
+are not reported back to HomeKit.
+
+The five commands for the RM4 Pro at `10.65.160.140` / `34:8e:89:e4:cb:96` were
+captured at **433.86 MHz**. They are stored locally, outside Git, at
+`~/Library/Application Support/hap-daikin-ac/rf-fan-light/codes.json` on macOS.
+RF playback verification was deferred at the user's request. The payloads are
+preserved exactly as learned, including the RM4 Pro's `B1` RF format.
+
+Install the additional entry point, then start its own HomeKit bridge:
+
+```bash
+poetry install
+poetry run hap-rf-fan homekit --interface en0 --address 10.65.5.23
+```
+
+Scan the new bridge's QR code in Home. The default port is **51235**, separate
+from the AC bridge, and pairing state is saved beside the RF code file as
+`homekit.state`. Starting the bridge sends no RF commands. Fan slider changes
+use a 300 ms debounce, while off commands cancel pending adjustments. A light
+toggle is never automatically retried after an uncertain response.
+
+`--interface` is an optional macOS socket scope for VPN routing conflicts; it
+does not change Wi-Fi or system routes. Choose the interface and advertised
+`--address` reachable from your HomeKit network. Omit `--interface` on Linux.
+The profile supplies the RM4 IP and MAC; `--host` and `--mac` can override them.
+`HAP_RF_FAN_CODES`, `HAP_RF_FAN_HOST`, `HAP_RF_FAN_MAC`,
+`HAP_RF_FAN_INTERFACE`, `HAP_RF_FAN_ADDRESS`, and `HAP_RF_FAN_PORT` provide the
+corresponding defaults. `--persist-file` selects a different pairing file.
+
+Commands for checking configuration without RF, learning, and manual playback:
+
+```bash
+poetry run hap-rf-fan send fan_high --dry-run
+poetry run hap-rf-fan homekit --dry-run --interface en0 --address 10.65.5.23
+poetry run hap-rf-fan learn --host 10.65.160.140 --mac 34:8e:89:e4:cb:96 --interface en0 --frequency 433.86
+poetry run hap-rf-fan learn --button fan_low --replace --interface en0
+poetry run hap-rf-fan send fan_low --interface en0
+poetry run hap-rf-fan send light_toggle --interface en0
+```
+
+Learning prompts before arming each button and saves each successful capture
+immediately. Existing captures require `--replace` to overwrite. Use `--codes`
+to select another JSON profile; all five commands are required for HomeKit.
+
+For Docker, build the updated image and use the new entry point with your RF
+profile mounted at `/data/codes.json`:
+
+```bash
+docker build -t hap-rf-fan .
+docker run --rm --network host --entrypoint hap-rf-fan \
+  -v /path/to/rf-fan-data:/data hap-rf-fan \
+  homekit --codes /data/codes.json
+```
+
+## Run The AC Bridge With Docker
 
 The published image is `sbhhbs/hap-dakin-ac`. Use host networking so HomeKit mDNS and Broadlink discovery can work, and mount `/data` to keep HomeKit pairing state across restarts.
 
