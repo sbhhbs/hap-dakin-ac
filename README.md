@@ -135,7 +135,8 @@ The fan shows the last requested setting; changes made with the original remote
 are not reported back to HomeKit.
 
 The five commands for the RM4 Pro at `10.65.160.140` / `34:8e:89:e4:cb:96` were
-captured at **433.86 MHz**. They are stored locally, outside Git, at
+captured with the receiver set to **433.86 MHz**. They are stored locally,
+outside Git, at
 `~/Library/Application Support/hap-daikin-ac/rf-fan-light/codes.json` on macOS.
 RF playback verification was deferred at the user's request. The payloads are
 preserved exactly as learned, including the RM4 Pro's `B1` RF format.
@@ -175,6 +176,59 @@ poetry run hap-rf-fan send light_toggle --interface en0
 Learning prompts before arming each button and saves each successful capture
 immediately. Existing captures require `--replace` to overwrite. Use `--codes`
 to select another JSON profile; all five commands are required for HomeKit.
+
+### Two Fans With Different RF Addresses
+
+The [protocol findings](docs/geding-rf-protocol.md) record the capture evidence,
+packet layout, address synthesis, sticker/XOR investigation, and verification limits.
+
+The captured 歌鼎 remote frames repeat a 24-bit word. In our decoding convention
+(long mark = 1, MSB first), the first 20 bits stay constant across buttons and
+the final four bits select the command: Off `C`, High `6`, Mid `2`, Low `8`,
+Light Toggle `5`. This describes the observed waveform; it does not establish
+how the printed sticker number becomes an RF address.
+
+| Sticker | Captured RF address | Receiver setting |
+| --- | --- | --- |
+| `0K24C0109` | `FFB7A` | 433.86 MHz, supplied when learning |
+| `0K24C0117` | `FC00E` | 433.78 MHz, following RF sweeps |
+
+The second remote's sweeps returned 433.76 and 433.78 MHz; an initial 305 MHz
+result was not reproduced. These are receiver tuning values, not precise carrier
+measurements. The two captured OFF words differ in their address bits, so the
+difference is not just frequency. No verified sticker conversion formula or
+matching manufacturer manual has been found.
+
+`--prefix` / `HAP_RF_FAN_PREFIX` supplies the raw five-digit hex RF address.
+`--frequency` / `HAP_RF_FAN_FREQUENCY` optionally overrides the carrier setting.
+For `send` and `homekit`, these options synthesize packets in memory using the
+learned profile's timings, repetitions, and command bits. They do not modify the
+code file. Synthesis accepts only the observed B1/C0 repeated-frame format and
+rejects inconsistent addresses, unknown commands, or damaged frames.
+
+Keep the first bridge's existing configuration. Start a second process using
+the same complete first profile as its template:
+
+```bash
+HAP_RF_FAN_PREFIX=FC00E HAP_RF_FAN_FREQUENCY=433.78 \
+HAP_RF_FAN_NAME="Ceiling Fan 2" HAP_RF_FAN_PORT=51236 \
+poetry run hap-rf-fan homekit --interface en0 --address 10.65.5.23
+```
+
+An explicit prefix selects a separate default pairing file, such as
+`homekit-fc00e.state`, and separate accessory serial numbers. Choose a different
+port for each running bridge; `HAP_RF_FAN_NAME` sets its display name. Without a
+prefix override the existing `homekit.state` and accessory identity are retained.
+
+The generated second OFF (`FC00EC`) and HIGH (`FC00E6`) words match independent
+captures from that remote. HIGH repeated identically across five complete
+frames. The second fan's Mid, Low, and Light Toggle values remain inferred from
+the first remote; generated packets have not been physically replayed for
+verification. Check synthesis without connecting or transmitting:
+
+```bash
+poetry run hap-rf-fan send fan_high --prefix FC00E --frequency 433.78 --dry-run
+```
 
 For Docker, build the updated image and use the new entry point with your RF
 profile mounted at `/data/codes.json`:

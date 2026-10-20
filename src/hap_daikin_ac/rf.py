@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import logging
@@ -18,6 +18,7 @@ import time
 from broadlink.exceptions import BroadlinkException, ReadError, StorageError
 
 from .rm4 import authenticate_device, normalize_mac, select_device
+from .rf_protocol import COMMAND_NIBBLES, Fixed24Packet, normalize_prefix
 
 LOGGER = logging.getLogger(__name__)
 COMMANDS = ("fan_off", "fan_high", "fan_mid", "fan_low", "light_toggle")
@@ -101,6 +102,31 @@ class RfProfile:
         packet = self.codes[command]
         validate_rf_packet(packet)
         return packet
+
+    def with_rf_overrides(
+        self, *, prefix: str | None = None, frequency_mhz: float | None = None,
+    ) -> RfProfile:
+        """Build packets in memory; leave the original learned profile intact."""
+        if prefix is None and frequency_mhz is None:
+            return self
+        if prefix is not None:
+            prefix = normalize_prefix(prefix)
+        if frequency_mhz is not None:
+            validate_frequency(frequency_mhz)
+        if not self.codes:
+            raise ValueError("learn RF commands before applying overrides")
+        decoded = {name: Fixed24Packet.decode(packet) for name, packet in self.codes.items()}
+        if len({packet.prefix for packet in decoded.values()}) != 1:
+            raise ValueError("RF templates must all belong to the same fan address")
+        for name, packet in decoded.items():
+            if packet.word & 0xF != COMMAND_NIBBLES.get(name):
+                raise ValueError(f"RF {name} does not match the observed fan command format")
+        return replace(
+            self,
+            frequency_mhz=self.frequency_mhz if frequency_mhz is None else frequency_mhz,
+            codes={name: packet.rewrite(prefix=prefix, frequency_mhz=frequency_mhz)
+                   for name, packet in decoded.items()},
+        )
 
     def save(self, path: Path) -> None:
         data = {

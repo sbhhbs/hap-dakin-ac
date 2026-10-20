@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from .rf import COMMANDS, RfController, RfProfile, broadlink_interface, default_profile_path
+from .rf_protocol import normalize_prefix
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,19 +22,22 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--mac", default=os.getenv("HAP_RF_FAN_MAC"))
         command.add_argument("--interface", default=os.getenv("HAP_RF_FAN_INTERFACE"), help="macOS network interface, e.g. en0")
         command.add_argument("--timeout", type=float, default=3)
+        command.add_argument("--frequency", type=float, default=os.getenv("HAP_RF_FAN_FREQUENCY"),
+                             help="RF MHz; overrides the learned carrier for send/homekit")
         if action != "learn":
             command.add_argument("--dry-run", action="store_true")
+            command.add_argument("--prefix", type=normalize_prefix, default=os.getenv("HAP_RF_FAN_PREFIX"),
+                                 help="five-hex-digit RF address, not the printed sticker number")
         if action == "send":
             command.add_argument("command", choices=COMMANDS)
         elif action == "learn":
             command.add_argument("--button", choices=COMMANDS, help="omit to learn all five commands")
-            command.add_argument("--frequency", type=float, default=None)
             command.add_argument("--learn-timeout", type=float, default=60)
             command.add_argument("--replace", action="store_true")
         else:
             command.add_argument("--address", default=os.getenv("HAP_RF_FAN_ADDRESS"))
             command.add_argument("--port", type=int, default=int(os.getenv("HAP_RF_FAN_PORT", "51235")))
-            command.add_argument("--name", default=None)
+            command.add_argument("--name", default=os.getenv("HAP_RF_FAN_NAME"))
             command.add_argument("--light-name", default="Light Toggle")
             command.add_argument("--persist-file", type=Path, default=None)
             command.add_argument("--pincode", help="optional HomeKit PIN in XXX-XX-XXX form")
@@ -76,9 +80,13 @@ def run_homekit(args, profile: RfProfile, controller: RfController) -> int:
 
     profile.require_complete()
     name = args.name or profile.name
-    persist = args.persist_file or args.codes.with_name("homekit.state")
+    state_name = f"homekit-{args.prefix.lower()}.state" if args.prefix else "homekit.state"
+    persist = args.persist_file or args.codes.with_name(state_name)
     persist.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    serial = hashlib.sha256(f"{profile.name}|{controller.mac}".encode()).hexdigest()[:12]
+    identity = f"{profile.name}|{controller.mac}"
+    if args.prefix:
+        identity += f"|{args.prefix}"
+    serial = hashlib.sha256(identity.encode()).hexdigest()[:12]
     controller.connect()
     driver = RfAccessoryDriver(
         address=args.address, port=args.port, persist_file=str(persist),
@@ -108,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         with broadlink_interface(args.interface):
             if args.action == "learn":
                 return run_learning(args, profile)
+            profile = profile.with_rf_overrides(prefix=args.prefix, frequency_mhz=args.frequency)
             controller = RfController(
                 profile, host=args.host, mac=args.mac, timeout=args.timeout, dry_run=args.dry_run
             )
